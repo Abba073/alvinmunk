@@ -1,6 +1,7 @@
 import { stampArt, shortAddr } from '@alvinmunk/shared';
-import { resolveHandle, getMeta } from './registry';
-import { getScores } from './reputation';
+import { resolveHandle } from './registry';
+import { getScores, type PeopleCounts } from './reputation';
+import { getPeopleCounts } from './constellation';
 import { loadPngDataUri } from './og-assets';
 import { faceFile, defaultAvatarId, isFaceId, type FaceId } from './avatar';
 
@@ -16,28 +17,23 @@ const LIME = '#C4FA4E';
 const FG = '#F4F1FA';
 const MUTED = '#8b86a8';
 
+/** XP tracks + the people counts the card shows. */
+export type OgScores = { social: number; earned: number } & PeopleCounts;
+
 export async function ogResolve(handle: string): Promise<{
   address: string | null;
-  scores: { social: number; earned: number };
-  avatarId: FaceId | undefined;
+  scores: OgScores;
 }> {
   let address: string | null = null;
-  let scores = { social: 0, earned: 0 };
-  let avatarId: FaceId | undefined;
+  let scores: OgScores = { social: 0, earned: 0, vouchedBy: 0, backed: 0 };
   try {
     address = await resolveHandle(handle);
     if (address) {
-      const [s, meta] = await Promise.all([
-        getScores(address),
-        getMeta(address).catch(() => null),
+      const [s, p] = await Promise.all([
+        getScores(address).catch(() => ({ social: 0, earned: 0 })),
+        getPeopleCounts(address).catch(() => ({ vouchedBy: 0, backed: 0 })),
       ]);
-      scores = s;
-      if (meta?.avatar?.kind === 'face' && isFaceId(meta.avatar.id)) {
-        avatarId = meta.avatar.id;
-      } else {
-        // Kit avatar or no stored meta → use deterministic default face for the OG card
-        avatarId = defaultAvatarId(address);
-      }
+      scores = { ...s, ...p };
     }
   } catch {
     /* unclaimed / rpc miss → render a neutral card */
@@ -48,7 +44,7 @@ export async function ogResolve(handle: string): Promise<{
 export function ogCard(opts: {
   handle: string;
   address: string | null;
-  scores: { social: number; earned: number };
+  scores: OgScores;
   invite?: boolean;
   /** The profile face to render. When set (claimed handle), shows the portrait sticker;
    *  otherwise falls back to the deterministic constellation. */
@@ -58,7 +54,6 @@ export function ogCard(opts: {
   const art = stampArt(address ?? `unclaimed-${handle}`, 7);
   const pts = art.points.split(' ').map((p) => p.split(',').map(Number));
   const polyPoints = [...pts, pts[0]].map((p) => `${p[0]},${p[1]}`).join(' ');
-  const stars = Math.max(1, Math.round(scores.social / 10));
   const faceUri = avatarId && address ? loadPngDataUri(faceFile(avatarId)) : null;
 
   return (
@@ -124,8 +119,8 @@ export function ogCard(opts: {
             {address ? shortAddr(address) : 'available — claim it'}
           </div>
           <div style={{ display: 'flex', marginTop: '40px', gap: '44px' }}>
-            <Stat label="STARS" value={address ? stars : 0} color={GOLD} />
-            <Stat label="SOCIAL XP" value={scores.social} color={VIOLET} />
+            <Stat label="VOUCHED BY" value={scores.vouchedBy} color={GOLD} />
+            <Stat label="BACKED" value={scores.backed} color={VIOLET} />
             <Stat label="EARNED XP" value={scores.earned} color={GREEN} />
           </div>
         </div>

@@ -1,6 +1,10 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
+    vec, Address, Env, IntoVal, Symbol, Val, Vec,
+};
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address) {
     let env = Env::default();
@@ -10,6 +14,21 @@ fn setup() -> (Env, RegistryContractClient<'static>, Address) {
     let client = RegistryContractClient::new(&env, &id);
     client.init(&admin);
     (env, client, admin)
+}
+
+/// A `handle/<kind> (who, handle)` event as `env.events().all()` reports it.
+fn handle_event(
+    client: &RegistryContractClient,
+    kind: &str,
+    who: &Address,
+    handle: &str,
+) -> (Address, Vec<Val>, Val) {
+    let env = &client.env;
+    (
+        client.address.clone(),
+        (symbol_short!("handle"), Symbol::new(env, kind)).into_val(env),
+        (who.clone(), Symbol::new(env, handle)).into_val(env),
+    )
 }
 
 #[test]
@@ -40,12 +59,26 @@ fn claim_taken_by_other_reverts() {
 }
 
 #[test]
+fn first_claim_emits_claimed() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+    assert_eq!(
+        env.events().all(),
+        vec![&env, handle_event(&client, "claimed", &alice, "alice")]
+    );
+}
+
+#[test]
 fn reclaim_same_handle_is_idempotent() {
     let (env, client, _admin) = setup();
     let alice = Address::generate(&env);
     client.claim(&alice, &symbol_short!("alice"));
-    client.claim(&alice, &symbol_short!("alice")); // no-op, no panic
-    assert_eq!(client.resolve(&symbol_short!("alice")), Some(alice));
+    // no-op, no panic; `all()` holds the last invocation's events, so it announced nothing
+    client.claim(&alice, &symbol_short!("alice"));
+    assert_eq!(env.events().all(), vec![&env]);
+    assert_eq!(client.resolve(&symbol_short!("alice")), Some(alice.clone()));
+    assert_eq!(client.reverse(&alice), Some(symbol_short!("alice")));
 }
 
 #[test]
@@ -54,10 +87,35 @@ fn rename_frees_the_old_handle() {
     let alice = Address::generate(&env);
     client.claim(&alice, &symbol_short!("old"));
     client.claim(&alice, &symbol_short!("new"));
+    // the freed handle is announced first, then the new claim
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            handle_event(&client, "released", &alice, "old"),
+            handle_event(&client, "claimed", &alice, "new"),
+        ]
+    );
     // old handle is freed; new one points to alice; reverse reflects the new one.
     assert_eq!(client.resolve(&symbol_short!("old")), None);
     assert_eq!(client.resolve(&symbol_short!("new")), Some(alice.clone()));
     assert_eq!(client.reverse(&alice), Some(symbol_short!("new")));
+}
+
+#[test]
+fn renamed_away_handle_is_reclaimable_by_another() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("old"));
+    client.claim(&alice, &symbol_short!("new"));
+    client.claim(&bob, &symbol_short!("old"));
+    assert_eq!(
+        env.events().all(),
+        vec![&env, handle_event(&client, "claimed", &bob, "old")]
+    );
+    assert_eq!(client.resolve(&symbol_short!("old")), Some(bob));
+    assert_eq!(client.resolve(&symbol_short!("new")), Some(alice));
 }
 
 #[test]
@@ -132,113 +190,75 @@ fn non_admin_upgrade_reverts() {
     client.upgrade(&hash);
 }
 
-// ---------- set_meta / get_meta tests ----------
+// --- Storage TTLs ---
 
-#[test]
-fn set_and_get_meta_round_trip() {
-    let (env, client, _admin) = setup();
-    let alice = Address::generate(&env);
-    client.claim(&alice, &symbol_short!("alice"));
+/// Live `state_archival` settings from `stellar network settings` (checked 2026-09-28):
+/// (min_persistent_ttl, min_temporary_ttl, max_entry_ttl).
+const TESTNET_TTLS: (u32, u32, u32) = (120_960, 720, 3_110_400);
+const MAINNET_TTLS: (u32, u32, u32) = (2_073_600, 17_280, 3_110_400);
 
-    // Pack a simple face avatar (kind=0, face index 2)
-    let avatar: u64 = 2; // bit63=0 (face), bits 2:0 = 2
-    let bio = soroban_sdk::String::from_str(&env, "Builder on Stellar");
-    client.set_meta(&alice, &avatar, &bio);
+/// `setup()` on a ledger with the given network TTL limits, set before registration so the
+/// instance gets the same TTLs as on the network.
+fn setup_with_ttls(
+    (min_persistent, min_temp, max_ttl): (u32, u32, u32),
+) -> (Env, RegistryContractClient<'static>) {
+    let env = Env::default();
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 1_000;
+        l.min_persistent_entry_ttl = min_persistent;
+        l.min_temp_entry_ttl = min_temp;
+        l.max_entry_ttl = max_ttl;
+    });
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let id = env.register(RegistryContract, ());
+    let client = RegistryContractClient::new(&env, &id);
+    client.init(&admin);
+    (env, client)
+}
 
-    let meta = client.get_meta(&alice).expect("meta should be present");
-    assert_eq!(meta.avatar, avatar);
-    assert_eq!(meta.bio, bio);
+fn ttl(env: &Env, client: &RegistryContractClient, key: &DataKey) -> u32 {
+    env.as_contract(&client.address, || env.storage().persistent().get_ttl(key))
 }
 
 #[test]
-fn set_meta_overwrites_previous() {
-    let (env, client, _admin) = setup();
-    let alice = Address::generate(&env);
-    client.claim(&alice, &symbol_short!("alice"));
+fn claim_extends_both_directions_to_bump_extend() {
+    for ttls in [TESTNET_TTLS, MAINNET_TTLS] {
+        let (env, client) = setup_with_ttls(ttls);
+        let alice = Address::generate(&env);
+        client.claim(&alice, &symbol_short!("alice"));
+        assert_eq!(
+            ttl(&env, &client, &DataKey::Fwd(symbol_short!("alice"))),
+            BUMP_EXTEND
+        );
+        assert_eq!(
+            ttl(&env, &client, &DataKey::Rev(alice.clone())),
+            BUMP_EXTEND
+        );
 
-    let bio1 = soroban_sdk::String::from_str(&env, "first bio");
-    let bio2 = soroban_sdk::String::from_str(&env, "updated bio");
-    client.set_meta(&alice, &1u64, &bio1);
-    client.set_meta(&alice, &2u64, &bio2);
-
-    let meta = client.get_meta(&alice).expect("meta should be present");
-    assert_eq!(meta.avatar, 2u64);
-    assert_eq!(meta.bio, bio2);
+        // A rename days later writes both keys again and tops them back up.
+        env.ledger()
+            .with_mut(|l| l.sequence_number += DAY_LEDGERS * 3);
+        client.claim(&alice, &symbol_short!("alice2"));
+        assert_eq!(
+            ttl(&env, &client, &DataKey::Fwd(symbol_short!("alice2"))),
+            BUMP_EXTEND
+        );
+        assert_eq!(ttl(&env, &client, &DataKey::Rev(alice)), BUMP_EXTEND);
+    }
 }
 
+/// `resolve` is a pure read (the web app only simulates it), so it must not extend.
 #[test]
-#[should_panic]
-fn set_meta_without_handle_reverts() {
-    let (env, client, _admin) = setup();
-    let alice = Address::generate(&env);
-    // alice has no handle yet
-    let bio = soroban_sdk::String::from_str(&env, "no handle");
-    client.set_meta(&alice, &0u64, &bio);
-}
-
-#[test]
-#[should_panic]
-fn set_meta_bio_over_80_chars_reverts() {
-    let (env, client, _admin) = setup();
+fn resolve_does_not_extend_the_handle() {
+    let (env, client) = setup_with_ttls(TESTNET_TTLS);
     let alice = Address::generate(&env);
     client.claim(&alice, &symbol_short!("alice"));
-
-    // 81-character bio
-    let long = "a".repeat(81);
-    let bio = soroban_sdk::String::from_str(&env, &long);
-    client.set_meta(&alice, &0u64, &bio);
-}
-
-#[test]
-fn set_meta_bio_exactly_80_chars_is_accepted() {
-    let (env, client, _admin) = setup();
-    let alice = Address::generate(&env);
-    client.claim(&alice, &symbol_short!("alice"));
-
-    let exactly_80 = "a".repeat(80);
-    let bio = soroban_sdk::String::from_str(&env, &exactly_80);
-    client.set_meta(&alice, &0u64, &bio); // should not panic
-    let meta = client.get_meta(&alice).expect("meta present");
-    assert_eq!(meta.bio.len(), 80);
-}
-
-#[test]
-fn get_meta_returns_none_when_unset() {
-    let (env, client, _admin) = setup();
-    let alice = Address::generate(&env);
-    client.claim(&alice, &symbol_short!("alice"));
-    assert!(client.get_meta(&alice).is_none());
-}
-
-#[test]
-fn kit_avatar_round_trip_via_u64() {
-    // Encode a kit avatar using the same bit-packing as lib/avatar.ts encodeAvatar:
-    // bit63=1 (kit), bits[2:0]=bg, [6:3]=acc, [10:7]=mouth, [14:11]=eyes, [18:15]=hair, [21:19]=skin
-    let (env, client, _admin) = setup();
-    let alice = Address::generate(&env);
-    client.claim(&alice, &symbol_short!("alice"));
-
-    // skin=3 hair=7 eyes=5 mouth=4 acc=9 bg=2 → pack it
-    let skin: u64 = 3 - 1; // 0-indexed
-    let hair: u64 = 7 - 1;
-    let eyes: u64 = 5 - 1;
-    let mouth: u64 = 4 - 1;
-    let acc: u64 = 9; // 0 = null, 1..=13 = acc index
-    let bg: u64 = 2;  // 0 = null, 1..=5 = bg index
-    let packed: u64 = (1u64 << 63) | (skin << 19) | (hair << 15) | (eyes << 11) | (mouth << 7) | (acc << 3) | bg;
-
-    let bio = soroban_sdk::String::from_str(&env, "kit test");
-    client.set_meta(&alice, &packed, &bio);
-
-    let meta = client.get_meta(&alice).expect("meta present");
-    assert_eq!(meta.avatar, packed);
-    // decode and verify fields
-    let v = meta.avatar;
-    assert_eq!((v >> 63) & 1, 1); // kind = kit
-    assert_eq!(((v >> 19) & 0b111) + 1, 3); // skin
-    assert_eq!(((v >> 15) & 0b1111) + 1, 7); // hair
-    assert_eq!(((v >> 11) & 0b1111) + 1, 5); // eyes
-    assert_eq!(((v >> 7) & 0b1111) + 1, 4);  // mouth
-    assert_eq!((v >> 3) & 0b1111, 9);         // acc
-    assert_eq!(v & 0b111, 2);                 // bg
+    env.ledger()
+        .with_mut(|l| l.sequence_number += DAY_LEDGERS * 3);
+    assert_eq!(client.resolve(&symbol_short!("alice")), Some(alice));
+    assert_eq!(
+        ttl(&env, &client, &DataKey::Fwd(symbol_short!("alice"))),
+        BUMP_EXTEND - DAY_LEDGERS * 3
+    );
 }
