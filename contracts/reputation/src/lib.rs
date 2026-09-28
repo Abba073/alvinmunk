@@ -367,9 +367,10 @@ impl ReputationContract {
             .get(&DataKey::Attestation(addr, schema_id))
     }
 
-    /// Pending 2nd-order bonuses owed to vouchers for this `claimer`.
-    /// Returns the full Vec — empty when there are none (claimer already verified,
-    /// or never claimed anything). Safe to call for any address.
+    /// The 2nd-order voucher bonuses queued on `claimer`: one entry per voucher whose
+    /// first-pair claim is waiting on the claimer's first verified (Earned) action.
+    /// Empty once the claimer verifies (the queue is paid out and removed) and for any
+    /// address with nothing queued. At most `MAX_PENDING` entries.
     pub fn get_pending(env: Env, claimer: Address) -> Vec<PendingBonus> {
         env.storage()
             .persistent()

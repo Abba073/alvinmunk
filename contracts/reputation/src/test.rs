@@ -512,6 +512,66 @@ fn get_profile_keeps_its_three_field_shape_for_existing_callers() {
     assert_eq!(client.get_counts(&bob), (1, 0));
 }
 
+// --- Pending 2nd-order bonuses read view (issue #275) ---
+
+#[test]
+fn get_pending_is_empty_for_an_untouched_address() {
+    let (env, client, _admin) = setup();
+    let stranger = Address::generate(&env);
+    assert_eq!(client.get_pending(&stranger).len(), 0);
+}
+
+#[test]
+fn get_pending_lists_queued_bonuses_until_the_claimer_verifies() {
+    let (env, client, _admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    let alice = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    vouch(&env, &client, &alice, &bob, 1);
+    vouch(&env, &client, &carol, &bob, 2);
+    // A repeat pair queues nothing new.
+    vouch(&env, &client, &alice, &bob, 3);
+
+    let pending = client.get_pending(&bob);
+    assert_eq!(pending.len(), 2);
+    let first = pending.get(0).unwrap();
+    let second = pending.get(1).unwrap();
+    assert_eq!(
+        (first.voucher, first.amount),
+        (alice.clone(), BONUS_VOUCHER)
+    );
+    assert_eq!(
+        (second.voucher, second.amount),
+        (carol.clone(), BONUS_VOUCHER)
+    );
+    // Pending is Bob's queue, not a list of what Alice is owed.
+    assert_eq!(client.get_pending(&alice).len(), 0);
+
+    // Bob's first verified action pays the queue out and clears it.
+    client.award_xp(&attester, &bob, &2u32, &50u64);
+    assert_eq!(client.get_pending(&bob).len(), 0);
+    assert_eq!(client.get_score(&alice), 25);
+    assert_eq!(client.get_score(&carol), 25);
+}
+
+#[test]
+fn get_pending_stays_empty_when_the_claimer_was_already_verified() {
+    let (env, client, _admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.award_xp(&attester, &bob, &2u32, &50u64);
+
+    vouch(&env, &client, &alice, &bob, 1);
+    // The bonus was paid at claim time, so nothing is waiting.
+    assert_eq!(client.get_pending(&bob).len(), 0);
+    assert_eq!(client.get_score(&alice), 25);
+}
+
 /// Release build of this contract, committed so the upgrade path can be tested without a
 /// wasm build step in CI. Refresh with `make upgrade-fixtures` after changing the contract.
 const REPUTATION_WASM: &[u8] = include_bytes!("../testdata/alvinmunk_reputation.wasm");
@@ -547,6 +607,8 @@ fn upgrade_preserves_people_counters() {
 
     assert_eq!(client.get_counts(&bob), (1, 0));
     assert_eq!(client.get_counts(&alice), (0, 1));
+    // Alice's bonus queued before the upgrade is still readable after it.
+    assert_eq!(client.get_pending(&bob).len(), 1);
     // The first-pair guard carries across the upgrade: a repeat pair still counts nothing,
     // a new pair still counts once.
     vouch(&env, &client, &alice, &bob, 2);

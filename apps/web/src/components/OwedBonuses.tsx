@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Copy, Check, Sparkles } from 'lucide-react';
-import { getOwedBonuses, type OwedBonus } from '@/lib/reputation';
+import { getOwedBonuses, type OwedBonus } from '@/lib/myvouches';
 import { useWallet } from '@/components/wallet/wallet-provider';
 import { Frame } from '@/components/fx/frame';
 import { Sticker } from '@/components/ui/sticker';
@@ -11,64 +11,70 @@ import { useTranslations } from '@/lib/i18n';
 import { FOCUS_MODE } from '@/lib/focus';
 import { cn, shortAddress } from '@/lib/utils';
 
-/**
- * OwedBonuses — the bonus Social XP you'll earn once the people you vouched become
- * verified. Turns the hidden anti-sybil 2nd-order gate into a cooperative mechanic:
- * you can see what's waiting and nudge each person to complete a quest.
- *
- * Self-hides when the owed list is empty.
- * Under FOCUS_MODE the quests link is replaced by a plain-text nudge.
- */
-
 const QUESTS_PATH = '/app/quests';
 
-function buildShareText(origin: string): string {
-  return `${origin}${QUESTS_PATH}`;
-}
-
+/**
+ * Owed bonuses — the voucher bonus you get once each person you vouched completes their
+ * first verified quest (the asymmetric 2nd-order gate, belts/08 §1). Turns that hidden rule
+ * into a cooperative nudge: the total on top, one row per person, and a one-tap share of
+ * the quests link with them — they're the one who has to act. Under FOCUS_MODE (quests
+ * hidden) the copy stays and the link goes. Renders nothing while loading or when nothing
+ * is owed, and re-reads when the tab comes back into view (e.g. after nudging someone).
+ */
 export function OwedBonuses() {
   const { profile } = useWallet();
   const t = useTranslations();
-  const [items, setItems] = useState<OwedBonus[] | null>(null);
+  const address = profile?.address;
+  const [items, setItems] = useState<OwedBonus[]>([]);
   const [copied, setCopied] = useState<string | null>(null); // claimer address
 
   useEffect(() => {
-    if (!profile?.address) return;
-    getOwedBonuses(profile.address)
-      .then(setItems)
-      .catch(() => setItems([]));
-  }, [profile?.address]);
+    if (!address) return;
+    let alive = true;
+    const load = () => {
+      getOwedBonuses(address)
+        .then((rows) => {
+          if (alive) setItems(rows);
+        })
+        .catch(() => {
+          /* keep the last list */
+        });
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load();
+    };
+    setItems([]);
+    load();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      alive = false;
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [address]);
 
-  // Still loading or no address yet
-  if (items === null) {
-    return (
-      <Frame label={t('owedBonuses.frameLabel')} index="…" accent="secondary">
-        <div className="space-y-2 p-4">
-          <div className="h-3 w-32 animate-pulse rounded bg-muted/40" />
-          <div className="h-10 animate-pulse rounded-xl bg-muted/30" />
-        </div>
-      </Frame>
-    );
-  }
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
-  // Nothing owed — self-hide
   if (items.length === 0) return null;
 
   const total = items.reduce((sum, r) => sum + r.amount, 0);
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const nameOf = (row: OwedBonus) => (row.handle ? `@${row.handle}` : shortAddress(row.claimer));
 
-  async function handleNudge(claimer: string) {
-    const link = buildShareText(origin);
+  async function nudge(row: OwedBonus) {
+    const url = `${window.location.origin}${QUESTS_PATH}`;
+    const text = t('owedBonuses.shareText');
     try {
-      if (!FOCUS_MODE && navigator.share) {
-        await navigator.share({ title: 'Earn verified XP on alvinmunk', url: link });
+      if (typeof navigator.share === 'function') {
+        await navigator.share({ text, url });
       } else {
-        await navigator.clipboard.writeText(link);
-        setCopied(claimer);
-        setTimeout(() => setCopied(null), 1500);
+        await navigator.clipboard.writeText(`${text} ${url}`);
+        setCopied(row.claimer);
       }
     } catch {
-      // share/clipboard unavailable — silently ignore
+      /* share dismissed / clipboard unavailable */
     }
   }
 
@@ -79,9 +85,13 @@ export function OwedBonuses() {
       accent="secondary"
       tape="tr"
     >
-      <Sticker name="stamp-verified" size={56} rotate={6} className="absolute -bottom-2 right-3 z-10 opacity-80" />
+      <Sticker
+        name="stamp-verified"
+        size={56}
+        rotate={6}
+        className="absolute -bottom-2 right-3 z-10 opacity-80"
+      />
 
-      {/* Header */}
       <div className="flex items-start gap-3 p-4 pb-2">
         <Sparkles className="mt-0.5 size-4 shrink-0 text-secondary" />
         <div>
@@ -92,47 +102,37 @@ export function OwedBonuses() {
         </div>
       </div>
 
-      {/* Rows */}
       <ul className="divide-y divide-border/50">
         {items.map((row) => {
-          const isCopied = copied === row.claimer;
+          const name = nameOf(row);
           return (
             <li key={row.claimer} className="flex items-center gap-3 p-4">
-              {/* XP amount badge */}
               <div className="grid size-10 shrink-0 place-items-center border border-dashed border-secondary/50 text-secondary">
                 <span className="font-mono text-[10px]">+{row.amount}</span>
               </div>
-
-              {/* Info */}
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm italic text-foreground/85">&ldquo;{row.note}&rdquo;</p>
-                <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                  {shortAddress(row.claimer)} · {t('owedBonuses.rowHint')}
-                </p>
+                <p className="text-sm text-foreground/90">{t('owedBonuses.row', { name })}</p>
+                {row.note && (
+                  <p className="truncate text-xs italic text-muted-foreground">
+                    &ldquo;{row.note}&rdquo;
+                  </p>
+                )}
               </div>
-
-              {/* Nudge button */}
-              {FOCUS_MODE ? (
-                <span className="shrink-0 text-xs text-muted-foreground italic">
-                  {t('owedBonuses.nudgeFocus')}
-                </span>
-              ) : (
+              {!FOCUS_MODE && (
                 <button
-                  onClick={() => handleNudge(row.claimer)}
-                  className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'glass shrink-0 font-mono')}
-                  aria-label={`Share quests link with ${shortAddress(row.claimer)}`}
-                >
-                  {isCopied ? (
-                    <>
-                      <Check className="size-4" />
-                      {t('owedBonuses.copied')}
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="size-4" />
-                      {t('owedBonuses.nudge')}
-                    </>
+                  onClick={() => nudge(row)}
+                  className={cn(
+                    buttonVariants({ variant: 'outline', size: 'sm' }),
+                    'glass shrink-0 font-mono',
                   )}
+                  aria-label={t('owedBonuses.nudgeLabel', { name })}
+                >
+                  {copied === row.claimer ? (
+                    <Check className="size-4" />
+                  ) : (
+                    <Copy className="size-4" />
+                  )}
+                  {copied === row.claimer ? t('owedBonuses.copied') : t('owedBonuses.nudge')}
                 </button>
               )}
             </li>

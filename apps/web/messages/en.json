@@ -107,10 +107,11 @@
 
   "owedBonuses.frameLabel": "owed // bonuses",
   "owedBonuses.title": "{total} XP waiting",
-  "owedBonuses.subtitle": "Unlocks when the people you vouched complete a verified quest.",
-  "owedBonuses.rowHint": "complete a quest to unlock",
+  "owedBonuses.subtitle": "Your vouch bonus unlocks when each person completes their first verified quest.",
+  "owedBonuses.row": "Unlocks when {name} completes a verified quest",
   "owedBonuses.nudge": "Share quests →",
-  "owedBonuses.nudgeFocus": "Ask them to complete a quest",
+  "owedBonuses.nudgeLabel": "Share the quests link with {name}",
+  "owedBonuses.shareText": "Complete a verified quest on alvinmunk — it unlocks the bonus from my vouch for you.",
   "owedBonuses.copied": "copied",
 
   "vouch.page.title": "Light someone's star",

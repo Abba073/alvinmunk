@@ -76,7 +76,7 @@ export default function AppHome() {
       {/* Time-sensitive: unclaimed half-cards you minted (stake at risk) — self-hides when empty */}
       <PendingHalfCards />
 
-      {/* Owed bonuses: pending Social XP from vouched people who haven't verified yet — self-hides when nothing owed */}
+      {/* Voucher bonuses still waiting on the people you vouched to verify — self-hides when none */}
       <OwedBonuses />
 
       {/* Quick actions — the three focused routes, one job each */}

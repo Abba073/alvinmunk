@@ -16,7 +16,7 @@ vi.mock('./contracts', () => ({
   },
 }));
 
-import { fromHex, toHex, getCounts, getProfile, getScores } from './reputation';
+import { fromHex, toHex, getCounts, getPending, getProfile, getScores } from './reputation';
 
 function expectBytes(actual: Uint8Array, expected: number[]) {
   expect(Array.from(actual)).toEqual(expected);
@@ -118,5 +118,31 @@ describe('getCounts', () => {
   it('is null for an empty return value', async () => {
     readPublicMock.mockResolvedValueOnce(undefined);
     expect(await getCounts('GADDR')).toBeNull();
+  });
+});
+
+describe('getPending', () => {
+  beforeEach(() => readPublicMock.mockReset());
+
+  it('maps the queued PendingBonus entries', async () => {
+    readPublicMock.mockResolvedValueOnce([
+      { voucher: 'GALICE', amount: 5n },
+      { voucher: 'GCAROL', amount: 5n },
+    ]);
+    expect(await getPending('GBOB')).toEqual([
+      { voucher: 'GALICE', amount: 5 },
+      { voucher: 'GCAROL', amount: 5 },
+    ]);
+    expect(readPublicMock).toHaveBeenCalledWith('CREPID', 'get_pending', expect.any(Array));
+  });
+
+  it('is empty once the claimer has verified', async () => {
+    readPublicMock.mockResolvedValueOnce([]);
+    expect(await getPending('GBOB')).toEqual([]);
+  });
+
+  it('rejects when the contract predates get_pending, instead of reading as nothing owed', async () => {
+    readPublicMock.mockRejectedValueOnce(new Error('simulate get_pending failed: MissingValue'));
+    await expect(getPending('GBOB')).rejects.toThrow('get_pending');
   });
 });

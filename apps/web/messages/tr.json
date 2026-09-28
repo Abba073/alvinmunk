@@ -107,10 +107,11 @@
 
   "owedBonuses.frameLabel": "beklenen // bonuslar",
   "owedBonuses.title": "{total} XP bekliyor",
-  "owedBonuses.subtitle": "Desteklediğin kişiler doğrulanmış görev tamamladığında açılır.",
-  "owedBonuses.rowHint": "kilidi açmak için görev tamamla",
+  "owedBonuses.subtitle": "Destek bonusun, her kişi ilk doğrulanmış görevini tamamladığında açılır.",
+  "owedBonuses.row": "{name} doğrulanmış bir görev tamamladığında açılır",
   "owedBonuses.nudge": "Görevleri paylaş →",
-  "owedBonuses.nudgeFocus": "Onlardan bir görev tamamlamasını iste",
+  "owedBonuses.nudgeLabel": "Görevler bağlantısını {name} ile paylaş",
+  "owedBonuses.shareText": "alvinmunk'ta doğrulanmış bir görev tamamla — sana verdiğim desteğin bonusunu açar.",
   "owedBonuses.copied": "kopyalandı",
 
   "vouch.page.title": "Birinin yıldızını yak",

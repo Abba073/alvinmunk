@@ -124,29 +124,54 @@ export async function claimVouch(wallet: Wallet, vouchId: number, secretHex: str
   );
 }
 
-/** Read a half-card by id (no wallet needed — used by the logged-out claim funnel). */
-export async function getVouch(vouchId: number): Promise<VouchView | null> {
-  const v = await readPublic<{
-    id: bigint;
-    from: string;
-    note: string;
-    claimed: boolean;
-    claimer: string | null;
-    created: bigint;
-    stake: bigint;
-    slashed: boolean;
-  } | null>(repId(), 'get_vouch', [args.u64(vouchId)]);
-  if (!v) return null;
-  return {
-    id: Number(v.id),
-    from: v.from,
-    note: v.note,
-    claimed: v.claimed,
-    claimer: v.claimer ?? null,
-    created: Number(v.created),
-    stake: Number(v.stake),
-    slashed: v.slashed,
-  };
+const pendingVouches = new Map<string, Promise<VouchView | null>>();
+
+/** Read a half-card by id (no wallet needed — used by the logged-out claim funnel).
+ *  Dashboard cards that scan the same stored vouches at once share each read. */
+export function getVouch(vouchId: number): Promise<VouchView | null> {
+  return shareInFlight(pendingVouches, String(vouchId), async () => {
+    const v = await readPublic<{
+      id: bigint;
+      from: string;
+      note: string;
+      claimed: boolean;
+      claimer: string | null;
+      created: bigint;
+      stake: bigint;
+      slashed: boolean;
+    } | null>(repId(), 'get_vouch', [args.u64(vouchId)]);
+    if (!v) return null;
+    return {
+      id: Number(v.id),
+      from: v.from,
+      note: v.note,
+      claimed: v.claimed,
+      claimer: v.claimer ?? null,
+      created: Number(v.created),
+      stake: Number(v.stake),
+      slashed: v.slashed,
+    };
+  });
+}
+
+/** A 2nd-order voucher bonus queued on a claimer — mirror of the contract's PendingBonus. */
+export interface PendingBonusView {
+  voucher: string;
+  /** Social XP, paid to `voucher` on the claimer's first verified action */
+  amount: number;
+}
+
+/** `get_pending(claimer)` — the voucher bonuses waiting on `claimer`'s first verified
+ *  (Earned) action, oldest first; empty once they verify. Rejects when the read fails —
+ *  including a deployed contract that predates the view — so "unknown" never reads as
+ *  "nothing owed". */
+export async function getPending(claimer: string): Promise<PendingBonusView[]> {
+  const list = await readPublic<Array<{ voucher: string; amount: bigint }> | undefined>(
+    repId(),
+    'get_pending',
+    [args.addr(claimer)],
+  );
+  return (list ?? []).map((p) => ({ voucher: String(p.voucher), amount: Number(p.amount) }));
 }
 
 /** Wallet-free profile aggregator — social + earned for ANY address. Prefers the
@@ -185,77 +210,4 @@ export async function getAttestation(addr: string): Promise<number> {
   } catch {
     return 0;
   }
-}
-
-// ── Owed bonuses (issue #275) ─────────────────────────────────────────────────
-
-/** One pending bonus entry owed to `me` for a specific claimer. */
-export interface OwedBonus {
-  /** Address of the claimer whose verification will release this bonus. */
-  claimer: string;
-  /** Note on the original vouch (for display). */
-  note: string;
-  /** Total Social XP owed to `me` from this claimer (sum of all pending entries for me). */
-  amount: number;
-}
-
-/**
- * `getOwedBonuses(me)` — scan the locally-stored vouches minted by `me`, find the
- * ones that have been claimed but whose claimer hasn't verified yet, and return the
- * pending Social XP owed per claimer.
- *
- * Algorithm:
- * 1. Load `me`'s minted vouches from localStorage (`getMyVouches`).
- * 2. For each, fetch `get_vouch(id)` to find the claimer (skip unclaimed / slashed).
- * 3. Call `get_pending(claimer)` on-chain; keep entries where `voucher == me`.
- * 4. Sum per claimer and return, sorted by amount descending.
- *
- * Skips claimers that are already verified (their Pending was flushed on first
- * Earned action, so `get_pending` returns [] for them).
- */
-export async function getOwedBonuses(me: string): Promise<OwedBonus[]> {
-  const { getMyVouches } = await import('./myvouches');
-  const mine = getMyVouches();
-  if (mine.length === 0) return [];
-
-  // Fetch chain state for all stored vouches in parallel.
-  const settled = await Promise.all(
-    mine.map(async (mv) => {
-      const v = await getVouch(mv.id).catch(() => null);
-      // Only care about claimed vouches — unclaimed means the bonus hasn't been queued.
-      if (!v || !v.claimed || !v.claimer) return null;
-      return { claimer: v.claimer, note: mv.note };
-    }),
-  );
-
-  // Deduplicate claimers (same person may have claimed multiple vouches from me).
-  const claimerMap = new Map<string, string>(); // claimer -> note (first vouch note wins)
-  for (const s of settled) {
-    if (!s) continue;
-    if (!claimerMap.has(s.claimer)) claimerMap.set(s.claimer, s.note);
-  }
-  if (claimerMap.size === 0) return [];
-
-  // For each unique claimer, read their pending bonus list on-chain.
-  const results: OwedBonus[] = [];
-  await Promise.all(
-    Array.from(claimerMap.entries()).map(async ([claimer, note]) => {
-      try {
-        const pending = await readPublic<Array<{ voucher: string; amount: bigint }>>(
-          repId(),
-          'get_pending',
-          [args.addr(claimer)],
-        );
-        if (!pending || pending.length === 0) return; // already verified — nothing owed
-        const total = pending
-          .filter((p) => p.voucher === me)
-          .reduce((sum, p) => sum + Number(p.amount), 0);
-        if (total > 0) results.push({ claimer, note, amount: total });
-      } catch {
-        // RPC miss — skip this claimer silently
-      }
-    }),
-  );
-
-  return results.sort((a, b) => b.amount - a.amount);
 }

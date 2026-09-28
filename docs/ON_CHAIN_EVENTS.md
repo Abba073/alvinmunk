@@ -598,6 +598,26 @@ the web app does this over the recent RPC window (`getPeopleCounts` in
 `apps/web/src/lib/constellation.ts`). A contract deployed before the upgrade has no
 `get_counts` at all, so treat a failed call as "unknown", not 0.
 
+### `PendingBonus` (`get_pending`)
+
+`get_pending(claimer) -> Vec<PendingBonus>` returns the 2nd-order voucher bonuses queued
+on `claimer` (`DataKey::Pending(claimer)`), oldest first:
+
+```rust
+pub struct PendingBonus {
+    pub voucher: Address,  // who is owed the bonus
+    pub amount: u64,       // Social XP (BONUS_VOUCHER = 5)
+}
+```
+
+`claim_vouch` queues one entry per fresh first pair while the claimer is unverified. The
+claimer's first Earned credit (`award_xp`) pays every entry out as a `social` event for
+its voucher and removes the queue, so the view is empty from then on — as it is for any
+address with nothing queued. Bonuses for an already-verified claimer are paid at claim
+time and never queued. At most `MAX_PENDING` (64) entries; bonuses past the cap are
+dropped. Keyed by claimer only: "what am I owed" means reading `get_pending` for each
+person you vouched and keeping the entries whose `voucher` is you.
+
 ### `QuestConfig`
 
 ```rust
