@@ -339,13 +339,29 @@ proptest! {
 
 // --- On-chain people counters (issue #273) ---
 
+/// Mint a half-card from `from` and claim it as `claimer` (fresh secret per `fill`).
+fn vouch(
+    env: &Env,
+    client: &ReputationContractClient,
+    from: &Address,
+    claimer: &Address,
+    fill: u8,
+) {
+    let (s, h) = secret_and_hash(env, fill);
+    let id = client.mint_vouch(from, &h, &String::from_str(env, "hey"));
+    client.claim_vouch(claimer, &id, &s);
+}
+
+/// The host error a `panic_with_error!(Error::X)` surfaces as through a `try_` call.
+fn contract_err(e: Error) -> soroban_sdk::Error {
+    soroban_sdk::Error::from_contract_error(e as u32)
+}
+
 #[test]
 fn get_counts_both_zero_for_fresh_address() {
     let (env, client, _admin) = setup();
     let alice = Address::generate(&env);
-    let (counts_vouched_by, counts_backed) = client.get_counts(&alice);
-    assert_eq!(counts_vouched_by, 0);
-    assert_eq!(counts_backed, 0);
+    assert_eq!(client.get_counts(&alice), (0, 0));
 }
 
 #[test]
@@ -353,19 +369,11 @@ fn counters_increment_on_first_pair_claim() {
     let (env, client, _admin) = setup();
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
-    let (s, h) = secret_and_hash(&env, 7);
-    let id = client.mint_vouch(&alice, &h, &String::from_str(&env, "hi"));
-    client.claim_vouch(&bob, &id, &s);
+    vouch(&env, &client, &alice, &bob, 7);
 
-    // bob was vouched BY alice -> bob.vouched_by = 1, bob.backed = 0
-    let (bob_vb, bob_ba) = client.get_counts(&bob);
-    assert_eq!(bob_vb, 1);
-    assert_eq!(bob_ba, 0);
-
-    // alice BACKED bob -> alice.backed = 1, alice.vouched_by = 0
-    let (alice_vb, alice_ba) = client.get_counts(&alice);
-    assert_eq!(alice_vb, 0);
-    assert_eq!(alice_ba, 1);
+    // Bob was vouched BY Alice; Alice BACKED Bob. Each side moves only its own counter.
+    assert_eq!(client.get_counts(&bob), (1, 0));
+    assert_eq!(client.get_counts(&alice), (0, 1));
 }
 
 #[test]
@@ -374,54 +382,134 @@ fn counters_not_incremented_on_repeated_pair() {
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
 
-    // First vouch — fresh pair → counters increment.
-    let (s1, h1) = secret_and_hash(&env, 1);
-    let id1 = client.mint_vouch(&alice, &h1, &String::from_str(&env, "first"));
-    client.claim_vouch(&bob, &id1, &s1);
+    vouch(&env, &client, &alice, &bob, 1);
+    // Same (alice -> bob) pair again: the claim succeeds but is not a fresh pair.
+    vouch(&env, &client, &alice, &bob, 2);
+    vouch(&env, &client, &alice, &bob, 3);
 
-    // Second vouch — same pair → counters must NOT change.
-    let (s2, h2) = secret_and_hash(&env, 2);
-    let id2 = client.mint_vouch(&alice, &h2, &String::from_str(&env, "again"));
-    client.claim_vouch(&bob, &id2, &s2);
-
-    let (bob_vb, _) = client.get_counts(&bob);
-    assert_eq!(bob_vb, 1, "repeated pair must not increment vouched_by");
-    let (_, alice_ba) = client.get_counts(&alice);
-    assert_eq!(alice_ba, 1, "repeated pair must not increment backed");
+    assert_eq!(
+        client.get_counts(&bob),
+        (1, 0),
+        "repeat pair must not move vouched_by"
+    );
+    assert_eq!(
+        client.get_counts(&alice),
+        (0, 1),
+        "repeat pair must not move backed"
+    );
 }
 
 #[test]
-fn get_profile_includes_people_counts() {
+fn self_vouch_leaves_counters_untouched() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let (s, h) = secret_and_hash(&env, 7);
+    let id = client.mint_vouch(&alice, &h, &String::from_str(&env, "me"));
+
+    assert_eq!(
+        client.try_claim_vouch(&alice, &id, &s),
+        Err(Ok(contract_err(Error::SelfVouch)))
+    );
+    assert_eq!(client.get_counts(&alice), (0, 0));
+}
+
+#[test]
+fn rejected_claims_leave_counters_untouched() {
     let (env, client, _admin) = setup();
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
     let (s, h) = secret_and_hash(&env, 7);
-    let id = client.mint_vouch(&alice, &h, &String::from_str(&env, "hi"));
+    let id = client.mint_vouch(&alice, &h, &String::from_str(&env, "x"));
+
+    let wrong = Bytes::from_array(&env, &[9u8; 32]);
+    assert_eq!(
+        client.try_claim_vouch(&bob, &id, &wrong),
+        Err(Ok(contract_err(Error::BadSecret)))
+    );
+    assert_eq!(client.get_counts(&bob), (0, 0));
+    assert_eq!(client.get_counts(&alice), (0, 0));
+
     client.claim_vouch(&bob, &id, &s);
-
-    let p = client.get_profile(&bob);
-    assert_eq!(p.vouched_by, 1);
-    assert_eq!(p.backed, 0);
-
-    let p2 = client.get_profile(&alice);
-    assert_eq!(p2.vouched_by, 0);
-    assert_eq!(p2.backed, 1);
+    // Re-claiming the same card (by anyone) is rejected and counts nothing.
+    assert_eq!(
+        client.try_claim_vouch(&carol, &id, &s),
+        Err(Ok(contract_err(Error::AlreadyClaimed)))
+    );
+    assert_eq!(client.get_counts(&carol), (0, 0));
+    assert_eq!(client.get_counts(&alice), (0, 1));
 }
 
 #[test]
-fn vouched_by_grows_with_multiple_unique_vouchers() {
+fn reverse_pair_is_a_distinct_first_pair() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    vouch(&env, &client, &alice, &bob, 1);
+    vouch(&env, &client, &bob, &alice, 2);
+
+    // Alice vouched Bob and Bob vouched Alice back: each was vouched by one person and
+    // backed one person.
+    assert_eq!(client.get_counts(&alice), (1, 1));
+    assert_eq!(client.get_counts(&bob), (1, 1));
+}
+
+#[test]
+fn both_counters_count_distinct_people() {
     let (env, client, _admin) = setup();
     let carol = Address::generate(&env);
+    let dave = Address::generate(&env);
 
-    for fill in 0u8..3 {
-        let voucher = Address::generate(&env);
-        let (s, h) = secret_and_hash(&env, fill);
-        let id = client.mint_vouch(&voucher, &h, &String::from_str(&env, "hey"));
-        client.claim_vouch(&carol, &id, &s);
+    // Three different people vouch Carol (one of them twice).
+    let vouchers = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    for (i, v) in vouchers.iter().enumerate() {
+        vouch(&env, &client, v, &carol, i as u8);
+    }
+    vouch(&env, &client, &vouchers[0], &carol, 10);
+    assert_eq!(client.get_counts(&carol), (3, 0));
+    for v in vouchers.iter() {
+        assert_eq!(client.get_counts(v), (0, 1));
     }
 
-    let (carol_vb, _) = client.get_counts(&carol);
-    assert_eq!(carol_vb, 3);
+    // Carol backs two different people.
+    vouch(&env, &client, &carol, &dave, 20);
+    vouch(&env, &client, &carol, &vouchers[1], 21);
+    assert_eq!(client.get_counts(&carol), (3, 2));
+    assert_eq!(client.get_counts(&vouchers[1]), (1, 1));
+}
+
+/// A caller compiled against the original three-field `Profile` (another contract, or a
+/// generated binding). Soroban decodes a struct only when the map has exactly its fields,
+/// so this is what breaks if `Profile` ever grows.
+#[contracttype]
+#[derive(Clone)]
+pub struct LegacyProfile {
+    pub social: u64,
+    pub earned: u64,
+    pub verified: bool,
+}
+
+#[test]
+fn get_profile_keeps_its_three_field_shape_for_existing_callers() {
+    use soroban_sdk::{vec, IntoVal};
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    vouch(&env, &client, &alice, &bob, 7);
+
+    let p: LegacyProfile = env.invoke_contract(
+        &client.address,
+        &Symbol::new(&env, "get_profile"),
+        vec![&env, bob.into_val(&env)],
+    );
+    assert_eq!(p.social, 30);
+    assert_eq!(p.earned, 0);
+    assert!(!p.verified);
+    assert_eq!(client.get_counts(&bob), (1, 0));
 }
 
 /// Release build of this contract, committed so the upgrade path can be tested without a
@@ -444,6 +532,27 @@ fn upgrade_to_identical_wasm_preserves_scores_and_attesters() {
     // The allowlist still works on the upgraded code.
     client.award_xp(&attester, &user, &2u32, &20u64);
     assert_eq!(client.get_earned(&user), 50);
+}
+
+#[test]
+fn upgrade_preserves_people_counters() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    vouch(&env, &client, &alice, &bob, 1);
+
+    let hash = env.deployer().upload_contract_wasm(REPUTATION_WASM);
+    client.upgrade(&hash);
+
+    assert_eq!(client.get_counts(&bob), (1, 0));
+    assert_eq!(client.get_counts(&alice), (0, 1));
+    // The first-pair guard carries across the upgrade: a repeat pair still counts nothing,
+    // a new pair still counts once.
+    vouch(&env, &client, &alice, &bob, 2);
+    vouch(&env, &client, &alice, &carol, 3);
+    assert_eq!(client.get_counts(&bob), (1, 0));
+    assert_eq!(client.get_counts(&alice), (0, 2));
 }
 
 #[test]

@@ -16,7 +16,7 @@ vi.mock('./contracts', () => ({
   },
 }));
 
-import { fromHex, toHex, getProfile, getScores } from './reputation';
+import { fromHex, toHex, getCounts, getProfile, getScores } from './reputation';
 
 function expectBytes(actual: Uint8Array, expected: number[]) {
   expect(Array.from(actual)).toEqual(expected);
@@ -58,16 +58,16 @@ describe('getProfile', () => {
   beforeEach(() => readPublicMock.mockReset());
 
   it('maps the aggregate view to a typed ProfileView', async () => {
-    readPublicMock.mockResolvedValueOnce({ social: 30n, earned: 50n, verified: true, vouched_by: 3, backed: 2 });
+    readPublicMock.mockResolvedValueOnce({ social: 30n, earned: 50n, verified: true });
     const p = await getProfile('GADDR');
-    expect(p).toEqual({ social: 30, earned: 50, verified: true, vouchedBy: 3, backed: 2 });
+    expect(p).toEqual({ social: 30, earned: 50, verified: true });
     expect(readPublicMock).toHaveBeenCalledWith('CREPID', 'get_profile', expect.any(Array));
   });
 
   it('defaults missing fields to zero/false', async () => {
     readPublicMock.mockResolvedValueOnce(undefined);
     const p = await getProfile('GADDR');
-    expect(p).toEqual({ social: 0, earned: 0, verified: false, vouchedBy: 0, backed: 0 });
+    expect(p).toEqual({ social: 0, earned: 0, verified: false });
   });
 
   it('shares one get_profile read between widgets asking at the same time', async () => {
@@ -84,20 +84,39 @@ describe('getScores', () => {
   beforeEach(() => readPublicMock.mockReset());
 
   it('prefers the single get_profile call (1 round-trip)', async () => {
-    readPublicMock.mockResolvedValueOnce({ social: 15n, earned: 5n, verified: false, vouched_by: 2, backed: 1 });
+    readPublicMock.mockResolvedValueOnce({ social: 15n, earned: 5n, verified: false });
     const s = await getScores('GADDR');
-    expect(s).toEqual({ social: 15, earned: 5, vouchedBy: 2, backed: 1 });
+    expect(s).toEqual({ social: 15, earned: 5 });
     expect(readPublicMock).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to get_score + get_earned when get_profile is unavailable', async () => {
     readPublicMock
       .mockRejectedValueOnce(new Error('unknown method get_profile'))
-      .mockResolvedValueOnce(12n)        // get_score
-      .mockResolvedValueOnce(8n)         // get_earned
-      .mockResolvedValueOnce([0, 0]);    // get_counts (fallback)
+      .mockResolvedValueOnce(12n) // get_score
+      .mockResolvedValueOnce(8n); // get_earned
     const s = await getScores('GADDR');
-    expect(s).toEqual({ social: 12, earned: 8, vouchedBy: 0, backed: 0 });
-    expect(readPublicMock).toHaveBeenCalledTimes(4);
+    expect(s).toEqual({ social: 12, earned: 8 });
+    expect(readPublicMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('getCounts', () => {
+  beforeEach(() => readPublicMock.mockReset());
+
+  it('maps the (vouched_by, backed) tuple', async () => {
+    readPublicMock.mockResolvedValueOnce([3, 1]);
+    expect(await getCounts('GADDR')).toEqual({ vouchedBy: 3, backed: 1 });
+    expect(readPublicMock).toHaveBeenCalledWith('CREPID', 'get_counts', expect.any(Array));
+  });
+
+  it('is null, not zero, when the contract predates get_counts', async () => {
+    readPublicMock.mockRejectedValueOnce(new Error('simulate get_counts failed: MissingValue'));
+    expect(await getCounts('GADDR')).toBeNull();
+  });
+
+  it('is null for an empty return value', async () => {
+    readPublicMock.mockResolvedValueOnce(undefined);
+    expect(await getCounts('GADDR')).toBeNull();
   });
 });

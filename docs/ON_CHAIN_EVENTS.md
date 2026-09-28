@@ -555,6 +555,49 @@ pub struct Vouch {
 }
 ```
 
+### `Profile` (`get_profile`)
+
+`get_profile(addr)` returns Social + Earned + verified in one call. It is computed on
+read, never stored.
+
+```rust
+pub struct Profile {
+    pub social: u64,
+    pub earned: u64,
+    pub verified: bool,  // has done >= 1 Earned action
+}
+```
+
+This shape is **frozen**. Soroban decodes a struct only when the returned map has exactly
+its fields, so adding a field breaks every existing caller that decodes `Profile` (another
+contract, a generated binding). New per-address data ships as its own view instead, like
+`get_counts` below.
+
+### People counts (`get_counts`)
+
+`get_counts(addr) -> (u32, u32)` returns `(vouched_by, backed)`:
+
+| Index | Type | Description |
+|-------|------|-------------|
+| 0 | `u32` | `vouched_by` — distinct people who vouched for `addr` |
+| 1 | `u32` | `backed` — distinct people `addr` vouched for |
+
+Both are persistent counters (`DataKey::VouchedBy(addr)` / `DataKey::Backed(addr)`) that
+`claim_vouch` increments only on a **fresh first pair** — the same `Seen(from, claimer)`
+guard that gates the claim XP. Repeat vouches between the same two people, self-vouches
+and rejected claims never move them. Direction matters: `alice -> bob` and `bob -> alice`
+are two pairs. No new event is emitted; each increment happens alongside a
+`vouch` / `claimed` event.
+
+**No backfill.** The counters start at the contract upgrade that introduced them. A pair
+first claimed before it is not counted (and never will be — the pair is already `Seen`).
+To cover those, fold `vouch` / `claimed` events: distinct `from` per `claimer` is
+`vouched_by`, distinct `claimer` per `from` is `backed` (de-duplicate repeat pairs). Both
+the counter and an event fold are lower bounds on the same number, so take the larger —
+the web app does this over the recent RPC window (`getPeopleCounts` in
+`apps/web/src/lib/constellation.ts`). A contract deployed before the upgrade has no
+`get_counts` at all, so treat a failed call as "unknown", not 0.
+
 ### `QuestConfig`
 
 ```rust

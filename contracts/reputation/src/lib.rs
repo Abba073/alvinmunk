@@ -69,8 +69,8 @@ pub enum DataKey {
     Started(Address),          // got the starter Social XP (bool)
     Verified(Address),         // did ≥1 Earned action -> releases pending voucher bonuses (bool)
     Pending(Address),          // claimer -> Vec<PendingBonus> (2nd-order voucher bonuses owed)
-    VouchedBy(Address),        // u32 — distinct people who vouched FOR this address (first-pair only)
-    Backed(Address),           // u32 — distinct people this address has vouched (first-pair only)
+    VouchedBy(Address),        // u32 — distinct people who vouched for this address
+    Backed(Address),           // u32 — distinct people this address vouched for
 }
 
 /// Async half-card vouch. `from` mints it bound to `claim_hash = sha256(secret)`.
@@ -117,11 +117,6 @@ pub struct Profile {
     pub social: u64,
     pub earned: u64,
     pub verified: bool,
-    /// Distinct people who vouched FOR this address (first-pair claims only, starts at
-    /// the upgrade ledger — zero for pre-upgrade wallets until they receive a new vouch).
-    pub vouched_by: u32,
-    /// Distinct people this address has vouched / backed (first-pair claims only, same caveat).
-    pub backed: u32,
 }
 
 #[contract]
@@ -239,6 +234,7 @@ impl ReputationContract {
     /// (if the claim is within `VOUCH_TTL_SECS`), and the voucher's 2nd-order bonus is
     /// released now if the claimer is already verified — otherwise it is queued until
     /// the claimer performs a verified (Earned) action. Vouches never touch Earned.
+    /// A fresh pair also moves both people counters (see `get_counts`).
     pub fn claim_vouch(env: Env, claimer: Address, vouch_id: u64, secret: Bytes) {
         claimer.require_auth();
         let mut vouch: Vouch = env
@@ -300,6 +296,7 @@ impl ReputationContract {
             Self::inc_count(&env, &DataKey::VouchedBy(claimer.clone()));
             Self::inc_count(&env, &DataKey::Backed(vouch.from.clone()));
         }
+
         env.events().publish(
             (symbol_short!("vouch"), symbol_short!("claimed")),
             (vouch_id, vouch.from, claimer),
@@ -394,13 +391,17 @@ impl ReputationContract {
             .unwrap_or(false)
     }
 
-    /// On-chain people counts for `addr`.
-    ///   .0 = vouched_by  — distinct people who vouched FOR `addr` (first-pair claims only)
-    ///   .1 = backed      — distinct people `addr` has vouched / backed (first-pair claims only)
+    /// On-chain people counts for `addr`: `(vouched_by, backed)`.
+    ///   - `vouched_by` — distinct people who vouched FOR `addr`
+    ///   - `backed`     — distinct people `addr` has vouched for
     ///
-    /// Counters start at the upgrade ledger. Pre-upgrade wallets read 0 until they receive
-    /// or give a new first-pair vouch; the UI should fall back to the event-derived count
-    /// for those (see FRONTEND_CONTENT.md §82).
+    /// Both only move on a fresh first-pair claim, so repeat vouches between the same two
+    /// people never inflate them. They start counting at the upgrade that introduced them
+    /// and cannot be backfilled: a wallet whose vouches all predate it reads 0 here, so
+    /// apps should fall back to the `vouch`/`claimed` event history for that case.
+    ///
+    /// Kept separate from `get_profile` on purpose — `Profile` is a frozen integration
+    /// shape, and adding fields to it would break every caller that decodes it.
     pub fn get_counts(env: Env, addr: Address) -> (u32, u32) {
         let vouched_by: u32 = env
             .storage()
@@ -415,17 +416,14 @@ impl ReputationContract {
         (vouched_by, backed)
     }
 
-    /// Aggregate profile view — social + earned + verified + people counts in ONE call.
-    /// Purely composes the existing getters + get_counts; no new storage, no new write
-    /// path. Cuts profile callers from multiple round-trips down to 1.
+    /// Aggregate profile view — social + earned + verified in ONE call. Purely
+    /// composes the existing getters; no new storage, no new write path. Cuts
+    /// get_profile-style callers from 2-3 round-trips down to 1.
     pub fn get_profile(env: Env, addr: Address) -> Profile {
-        let (vouched_by, backed) = Self::get_counts(env.clone(), addr.clone());
         Profile {
             social: Self::get_score(env.clone(), addr.clone()),
             earned: Self::get_earned(env.clone(), addr.clone()),
             verified: Self::is_verified(env, addr),
-            vouched_by,
-            backed,
         }
     }
 
