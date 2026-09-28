@@ -6,6 +6,7 @@
  * own address at claim time. This is the cold-start fix (belts/00-strategy §3).
  */
 import { invokeAndWait, readContract, readPublic, args, repId, questId } from './contracts';
+import { shareInFlight } from './utils';
 import type { Wallet } from './wallet';
 
 /** Vouch TTL — claim within this window to refund the voucher's stake (mirrors the
@@ -39,26 +40,32 @@ export interface ProfileView {
   backed: number;
 }
 
-/** `get_profile(addr)` — single round-trip for social + earned + verified + people counts. */
-export async function getProfile(address: string): Promise<ProfileView> {
-  const p = await readPublic<{
-    social: bigint;
-    earned: bigint;
-    verified: boolean;
-    vouched_by: number;
-    backed: number;
-  } | undefined>(
-    repId(),
-    'get_profile',
-    [args.addr(address)],
-  );
-  return {
-    social: Number(p?.social ?? 0),
-    earned: Number(p?.earned ?? 0),
-    verified: Boolean(p?.verified ?? false),
-    vouchedBy: Number(p?.vouched_by ?? 0),
-    backed: Number(p?.backed ?? 0),
-  };
+const pendingProfiles = new Map<string, Promise<ProfileView>>();
+
+/** `get_profile(addr)` — single round-trip for social + earned + verified + people counts.
+ *  Widgets that mount together (profile header + badge row, stat strip + badge row) share
+ *  one read. */
+export function getProfile(address: string): Promise<ProfileView> {
+  return shareInFlight(pendingProfiles, address, async () => {
+    const p = await readPublic<{
+      social: bigint;
+      earned: bigint;
+      verified: boolean;
+      vouched_by: number;
+      backed: number;
+    } | undefined>(
+      repId(),
+      'get_profile',
+      [args.addr(address)],
+    );
+    return {
+      social: Number(p?.social ?? 0),
+      earned: Number(p?.earned ?? 0),
+      verified: Boolean(p?.verified ?? false),
+      vouchedBy: Number(p?.vouched_by ?? 0),
+      backed: Number(p?.backed ?? 0),
+    };
+  });
 }
 
 /** `get_counts(addr)` — on-chain people counts without the full profile.
