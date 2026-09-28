@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
  * catch up after a vouch / claim / quest without a full reload.
  */
 const REFRESH_MS = 15_000;
-/** People counts may need the RPC event window as a fallback, so they poll slower. */
+/** People counts also scan the RPC event window (see getPeopleCounts), so they poll slower. */
 const PEOPLE_REFRESH_MS = 60_000;
 
 type Tile = {

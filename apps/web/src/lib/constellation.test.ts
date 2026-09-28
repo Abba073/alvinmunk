@@ -9,7 +9,7 @@ const { getCountsMock, fetchEventsMock } = vi.hoisted(() => ({
 vi.mock('./reputation', () => ({ getCounts: getCountsMock, getVouch: vi.fn() }));
 vi.mock('./events', () => ({ fetchReputationEvents: fetchEventsMock }));
 
-import { addrHue, countPeopleInEvents, getPeopleCounts, timeAgo } from './constellation';
+import { addrHue, getPeopleCounts, timeAgo } from './constellation';
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -61,46 +61,29 @@ const claimed = (id: number, from: string, claimer: string): RepEvent => ({
   ledger: id,
 });
 
-describe('countPeopleInEvents', () => {
-  it('counts distinct vouchers and distinct people backed, collapsing repeat pairs', () => {
-    const events: RepEvent[] = [
-      claimed(1, A, ME),
-      claimed(2, A, ME), // repeat pair
-      claimed(3, B, ME),
-      claimed(4, ME, C),
-      claimed(5, ME, C), // repeat pair
-      claimed(6, A, B), // unrelated edge
-    ];
-    expect(countPeopleInEvents(events, ME)).toEqual({ vouchedBy: 2, backed: 1 });
-  });
-
-  it('ignores other event kinds and malformed payloads', () => {
-    const events: RepEvent[] = [
-      { topics: ['vouch', 'minted'], data: [1, A], ledger: 1 },
-      { topics: ['social', ME], data: [10, 30], ledger: 2 },
-      { topics: ['vouch', 'claimed'], data: null, ledger: 3 },
-    ];
-    expect(countPeopleInEvents(events, ME)).toEqual({ vouchedBy: 0, backed: 0 });
-  });
-});
-
 describe('getPeopleCounts', () => {
   beforeEach(() => {
     getCountsMock.mockReset();
     fetchEventsMock.mockReset();
   });
 
-  it('uses the on-chain counters without reading events once both are live', async () => {
+  it('keeps the durable counters when they exceed the recent window', async () => {
     getCountsMock.mockResolvedValue({ vouchedBy: 4, backed: 2 });
+    fetchEventsMock.mockResolvedValue([claimed(1, A, ME)]);
     expect(await getPeopleCounts(ME)).toEqual({ vouchedBy: 4, backed: 2 });
-    expect(fetchEventsMock).not.toHaveBeenCalled();
   });
 
   it('fills a counter that is still 0 from the recent claim events', async () => {
     getCountsMock.mockResolvedValue({ vouchedBy: 3, backed: 0 });
     fetchEventsMock.mockResolvedValue([claimed(1, ME, A), claimed(2, ME, B), claimed(3, C, ME)]);
-    // vouchedBy keeps the durable 3 (not the 1 in the window); backed falls back to 2.
     expect(await getPeopleCounts(ME)).toEqual({ vouchedBy: 3, backed: 2 });
+  });
+
+  it('never reads lower than the distinct people in the window', async () => {
+    // A repeat of a pair first claimed before the counters existed: the counter skips it.
+    getCountsMock.mockResolvedValue({ vouchedBy: 1, backed: 0 });
+    fetchEventsMock.mockResolvedValue([claimed(1, A, ME), claimed(2, B, ME), claimed(3, B, ME)]);
+    expect(await getPeopleCounts(ME)).toEqual({ vouchedBy: 2, backed: 0 });
   });
 
   it('falls back to events when the deployed contract has no get_counts', async () => {
@@ -111,7 +94,7 @@ describe('getPeopleCounts', () => {
 
   it('reads 0 for a wallet with no vouches anywhere', async () => {
     getCountsMock.mockResolvedValue({ vouchedBy: 0, backed: 0 });
-    fetchEventsMock.mockResolvedValue([]);
+    fetchEventsMock.mockResolvedValue([claimed(1, A, B)]);
     expect(await getPeopleCounts(ME)).toEqual({ vouchedBy: 0, backed: 0 });
   });
 });

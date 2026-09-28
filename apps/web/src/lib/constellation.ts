@@ -5,8 +5,9 @@
  * get_vouch view (durable indexer deferred to Blue/Black, belts/00-strategy).
  */
 import { EVENTS } from '@alvinmunk/shared';
-import { fetchReputationEvents, type RepEvent } from './events';
+import { fetchReputationEvents } from './events';
 import { getCounts, getVouch, type PeopleCounts } from './reputation';
+import { foldVouchEdges } from './badges';
 
 /** A person who vouched you — one star in your constellation. */
 export interface VoucherStar {
@@ -49,37 +50,18 @@ export async function fetchVouchersOf(address: string, max = 14): Promise<Vouche
 }
 
 /**
- * Distinct people in an event window: who vouched `address` (claimed edges into it) and
- * whom it backed (claimed edges out of it). Repeat vouches between the same two people
- * collapse to one, matching the contract's first-pair counters.
- */
-export function countPeopleInEvents(events: RepEvent[], address: string): PeopleCounts {
-  const vouchers = new Set<string>();
-  const backed = new Set<string>();
-  for (const { topics, data } of events) {
-    if (topics[0] !== EVENTS.VOUCH || topics[1] !== 'claimed') continue;
-    if (!Array.isArray(data)) continue;
-    const from = String(data[1]);
-    const claimer = String(data[2]);
-    if (claimer === address) vouchers.add(from);
-    if (from === address) backed.add(claimer);
-  }
-  return { vouchedBy: vouchers.size, backed: backed.size };
-}
-
-/**
- * "People who vouched" / "people you backed" for `address` — the durable on-chain
- * counters (`get_counts`). Those start at the upgrade that added them and can't be
- * backfilled, so where a counter is still 0 (or the deployed contract predates the view)
- * the recent `vouch:claimed` events fill in. Never derived from Social XP.
+ * "People who vouched" / "people you backed" for `address`. The durable on-chain counters
+ * (`get_counts`) start at the upgrade that added them and can't be backfilled; the recent
+ * `vouch:claimed` events only cover the RPC window. Both are lower bounds on the same
+ * number, so each side takes the larger — a counter still at 0 (or a deployed contract
+ * that predates the view) falls back to the events. Never derived from Social XP.
  */
 export async function getPeopleCounts(address: string): Promise<PeopleCounts> {
-  const onchain = await getCounts(address);
-  if (onchain && onchain.vouchedBy > 0 && onchain.backed > 0) return onchain;
-  const recent = countPeopleInEvents(await fetchReputationEvents(), address);
+  const [onchain, events] = await Promise.all([getCounts(address), fetchReputationEvents()]);
+  const recent = foldVouchEdges(events, address);
   return {
-    vouchedBy: onchain?.vouchedBy || recent.vouchedBy,
-    backed: onchain?.backed || recent.backed,
+    vouchedBy: Math.max(onchain?.vouchedBy ?? 0, recent.vouchedBy.length),
+    backed: Math.max(onchain?.backed ?? 0, recent.vouchedFor.length),
   };
 }
 

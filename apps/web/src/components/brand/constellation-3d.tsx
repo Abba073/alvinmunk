@@ -12,8 +12,13 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Stars, Html, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { shortAddr } from '@alvinmunk/shared';
-import { fetchVouchersOf, timeAgo, addrHue, type VoucherStar } from '@/lib/constellation';
-import { getCounts } from '@/lib/reputation';
+import {
+  fetchVouchersOf,
+  getPeopleCounts,
+  timeAgo,
+  addrHue,
+  type VoucherStar,
+} from '@/lib/constellation';
 import { Star, OrbitRing, useGlow, fibonacciSphere, reducedMotion } from './constellation-parts';
 
 const RADIUS = 3.0;
@@ -142,7 +147,7 @@ function Scene({
 
 export default function ConstellationHero3D({ address, handle }: { address: string; handle: string }) {
   const [vouchers, setVouchers] = useState<VoucherStar[] | null>(null);
-  // Durable on-chain "vouched by" count — the stars above only cover the recent RPC window.
+  // Everyone who vouched you (durable on-chain count) — the stars only cover the RPC window.
   const [vouchedBy, setVouchedBy] = useState<number | null>(null);
   const [selected, setSelected] = useState<VoucherStar | null>(null);
   const [hoverId, setHoverId] = useState<number | null>(null);
@@ -164,16 +169,20 @@ export default function ConstellationHero3D({ address, handle }: { address: stri
           setLoadFailed(true);
         }
       });
-    getCounts(address).then((c) => {
-      if (alive) setVouchedBy(c?.vouchedBy ?? 0);
-    });
+    getPeopleCounts(address)
+      .then((p) => {
+        if (alive) setVouchedBy(p.vouchedBy);
+      })
+      .catch(() => {
+        if (alive) setVouchedBy(0);
+      });
     return () => {
       alive = false;
     };
   }, [address]);
 
-  // Everyone who vouched you, not just who the event window can draw. The counter starts at
-  // its contract upgrade, so it never reads lower than the stars actually on screen.
+  // The copy counts everyone who vouched you, not just the stars the window can draw — and
+  // never fewer than the stars actually on screen.
   const shown = vouchers?.length ?? 0;
   const count = Math.max(vouchedBy ?? 0, shown);
 

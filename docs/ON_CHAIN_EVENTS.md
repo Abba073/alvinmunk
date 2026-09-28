@@ -592,10 +592,11 @@ are two pairs. No new event is emitted; each increment happens alongside a
 **No backfill.** The counters start at the contract upgrade that introduced them. A pair
 first claimed before it is not counted (and never will be — the pair is already `Seen`).
 To cover those, fold `vouch` / `claimed` events: distinct `from` per `claimer` is
-`vouched_by`, distinct `claimer` per `from` is `backed` (de-duplicate repeat pairs). The
-web app does this over the recent RPC window wherever a counter still reads 0
-(`getPeopleCounts` in `apps/web/src/lib/constellation.ts`). A contract deployed before
-the upgrade has no `get_counts` at all, so treat a failed call as "unknown", not 0.
+`vouched_by`, distinct `claimer` per `from` is `backed` (de-duplicate repeat pairs). Both
+the counter and an event fold are lower bounds on the same number, so take the larger —
+the web app does this over the recent RPC window (`getPeopleCounts` in
+`apps/web/src/lib/constellation.ts`). A contract deployed before the upgrade has no
+`get_counts` at all, so treat a failed call as "unknown", not 0.
 
 ### `QuestConfig`
 
