@@ -3,13 +3,15 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useWallet } from '@/components/wallet/wallet-provider';
-import { getScores } from '@/lib/reputation';
+import { getScores, type PeopleCounts } from '@/lib/reputation';
+import { getPeopleCounts } from '@/lib/constellation';
 import { resolveHandle, getMeta } from '@/lib/registry';
 import { Crest } from '@/components/brand/crest';
 import { Avatar } from '@/components/Avatar';
 import { Frame } from '@/components/fx/frame';
 import { Stamp } from '@/components/fx/stamp';
 import { ShareRow } from '@/components/fx/share-row';
+import { BadgeGallery } from '@/components/BadgeGallery';
 import { Skeleton } from '@/components/ui/skeleton';
 import { buttonVariants } from '@/components/ui/button';
 import { cn, shortAddress } from '@/lib/utils';
@@ -25,6 +27,7 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
   const { profile } = useWallet();
   const [address, setAddress] = useState<string | null | undefined>(undefined); // undefined = loading
   const [scores, setScores] = useState<{ social: number; earned: number } | null>(null);
+  const [people, setPeople] = useState<PeopleCounts | null>(null);
   const [onChainAvatar, setOnChainAvatar] = useState<AvatarConfig | undefined>(undefined);
   const [onChainBio, setOnChainBio] = useState<string | undefined>(undefined);
 
@@ -32,23 +35,25 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
     let alive = true;
     setAddress(undefined);
     setScores(null);
+    setPeople(null);
     setOnChainAvatar(undefined);
     setOnChainBio(undefined);
     resolveHandle(handle)
       .then(async (addr) => {
         if (!alive) return;
         setAddress(addr);
-        if (addr) {
-          const [s, meta] = await Promise.all([
-            getScores(addr).catch(() => ({ social: 0, earned: 0 })),
-            getMeta(addr).catch(() => null),
-          ]);
-          if (!alive) return;
-          setScores(s);
-          if (meta) {
-            setOnChainAvatar(meta.avatar);
-            setOnChainBio(meta.bio);
-          }
+        if (!addr) return;
+        const [s, p, meta] = await Promise.all([
+          getScores(addr).catch(() => ({ social: 0, earned: 0 })),
+          getPeopleCounts(addr).catch(() => ({ vouchedBy: 0, backed: 0 })),
+          getMeta(addr).catch(() => null),
+        ]);
+        if (!alive) return;
+        setScores(s);
+        setPeople(p);
+        if (meta) {
+          setOnChainAvatar(meta.avatar);
+          setOnChainBio(meta.bio);
         }
       })
       .catch(() => alive && setAddress(null));
@@ -99,8 +104,6 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
     );
   }
 
-  const constellation = scores ? Math.max(1, Math.round(scores.social / 10)) : undefined;
-
   return (
     <div className="container max-w-2xl py-14">
       <Frame label={`profile // @${handle}`} index="ID" tilt>
@@ -124,11 +127,16 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
         </div>
 
         <div className="grid grid-cols-3 divide-x divide-border/60 border-t border-border/60">
-          <Field label="SOCIAL_XP" value={scores?.social} accent="primary" />
+          <Field label="VOUCHED_BY" value={people?.vouchedBy} accent="primary" />
+          <Field label="BACKED" value={people?.backed} accent="tertiary" />
           <Field label="EARNED_XP" value={scores?.earned} accent="secondary" />
-          <Field label="STARS" value={constellation} accent="tertiary" />
         </div>
       </Frame>
+
+      {/* Milestone badges — earned + next-to-earn, on every public profile */}
+      <div className="mt-5">
+        <BadgeGallery address={address} />
+      </div>
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <Link href="/app" className={cn(buttonVariants({ variant: 'flow' }))}>
