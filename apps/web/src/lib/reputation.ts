@@ -31,11 +31,23 @@ export interface ProfileView {
   social: number;
   earned: number;
   verified: boolean;
+  /** Distinct people who vouched FOR this address (on-chain counter, first-pair only).
+   *  Zero for pre-upgrade wallets that have not yet received a new vouch. */
+  vouchedBy: number;
+  /** Distinct people this address has vouched / backed (on-chain counter, first-pair only).
+   *  Zero for pre-upgrade wallets that have not yet given a new vouch. */
+  backed: number;
 }
 
-/** `get_profile(addr)` — single round-trip for social + earned + verified. */
+/** `get_profile(addr)` — single round-trip for social + earned + verified + people counts. */
 export async function getProfile(address: string): Promise<ProfileView> {
-  const p = await readPublic<{ social: bigint; earned: bigint; verified: boolean } | undefined>(
+  const p = await readPublic<{
+    social: bigint;
+    earned: bigint;
+    verified: boolean;
+    vouched_by: number;
+    backed: number;
+  } | undefined>(
     repId(),
     'get_profile',
     [args.addr(address)],
@@ -44,7 +56,29 @@ export async function getProfile(address: string): Promise<ProfileView> {
     social: Number(p?.social ?? 0),
     earned: Number(p?.earned ?? 0),
     verified: Boolean(p?.verified ?? false),
+    vouchedBy: Number(p?.vouched_by ?? 0),
+    backed: Number(p?.backed ?? 0),
   };
+}
+
+/** `get_counts(addr)` — on-chain people counts without the full profile.
+ *  Returns [vouchedBy, backed]. Counters start at the upgrade ledger; pre-upgrade
+ *  wallets return 0 until they receive or give a new first-pair vouch.
+ */
+export async function getCounts(address: string): Promise<{ vouchedBy: number; backed: number }> {
+  try {
+    const result = await readPublic<readonly [number, number] | undefined>(
+      repId(),
+      'get_counts',
+      [args.addr(address)],
+    );
+    return {
+      vouchedBy: Number(result?.[0] ?? 0),
+      backed: Number(result?.[1] ?? 0),
+    };
+  } catch {
+    return { vouchedBy: 0, backed: 0 };
+  }
 }
 
 // ── client-side crypto for the claim secret ──
@@ -116,19 +150,22 @@ export async function getVouch(vouchId: number): Promise<VouchView | null> {
   };
 }
 
-/** Wallet-free profile aggregator — social + earned for ANY address. Prefers the
- *  single-call get_profile view; falls back to the two parallel legacy calls if
- *  the deployed contract predates get_profile. */
-export async function getScores(address: string): Promise<{ social: number; earned: number }> {
+/** Wallet-free profile aggregator — social + earned + people counts for ANY address.
+ *  Prefers the single-call get_profile view; falls back to the two parallel legacy
+ *  calls (+ get_counts) if the deployed contract predates get_profile. */
+export async function getScores(address: string): Promise<{ social: number; earned: number; vouchedBy: number; backed: number }> {
   try {
     const p = await getProfile(address);
-    return { social: p.social, earned: p.earned };
+    return { social: p.social, earned: p.earned, vouchedBy: p.vouchedBy, backed: p.backed };
   } catch {
-    const [s, e] = await Promise.all([
-      readPublic<bigint>(repId(), 'get_score', [args.addr(address)]).catch(() => 0n),
-      readPublic<bigint>(repId(), 'get_earned', [args.addr(address)]).catch(() => 0n),
+    const [[s, e], counts] = await Promise.all([
+      Promise.all([
+        readPublic<bigint>(repId(), 'get_score', [args.addr(address)]).catch(() => 0n),
+        readPublic<bigint>(repId(), 'get_earned', [args.addr(address)]).catch(() => 0n),
+      ]),
+      getCounts(address),
     ]);
-    return { social: Number(s ?? 0), earned: Number(e ?? 0) };
+    return { social: Number(s ?? 0), earned: Number(e ?? 0), vouchedBy: counts.vouchedBy, backed: counts.backed };
   }
 }
 

@@ -36,7 +36,7 @@ export default function InvitePage({ params }: { params: { handle: string } }) {
       .then(async (addr) => {
         if (!alive) return;
         setAddress(addr);
-        if (addr) setScores(await getScores(addr).catch(() => ({ social: 0, earned: 0 })));
+        if (addr) setScores(await getScores(addr).catch(() => ({ social: 0, earned: 0, vouchedBy: 0, backed: 0 })));
       })
       .catch(() => alive && setAddress(null));
     return () => {
@@ -44,7 +44,13 @@ export default function InvitePage({ params }: { params: { handle: string } }) {
     };
   }, [handle]);
 
-  const stars = scores ? Math.max(1, Math.round(scores.social / 10)) : 0;
+  // Real on-chain people count. Falls back to the social/10 approximation only when
+  // the counter is still 0 (pre-upgrade wallet that hasn't received a new vouch yet).
+  const vouchedBy = scores
+    ? scores.vouchedBy > 0
+      ? scores.vouchedBy
+      : Math.max(1, Math.round(scores.social / 10))
+    : 0;
 
   return (
     <div className="container max-w-lg py-16">
@@ -70,7 +76,7 @@ export default function InvitePage({ params }: { params: { handle: string } }) {
               {address ? shortAddress(address) : 'new to the sky'}
             </p>
             <div className="mt-2">
-              <Stamp accent="secondary">✦ {address ? `${stars} stars` : 'be their first'}</Stamp>
+              <Stamp accent="secondary">✦ {address ? `${vouchedBy} vouched` : 'be their first'}</Stamp>
             </div>
           </div>
         </div>

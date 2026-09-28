@@ -33,7 +33,7 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
       .then(async (addr) => {
         if (!alive) return;
         setAddress(addr);
-        if (addr) setScores(await getScores(addr).catch(() => ({ social: 0, earned: 0 })));
+        if (addr) setScores(await getScores(addr).catch(() => ({ social: 0, earned: 0, vouchedBy: 0, backed: 0 })));
       })
       .catch(() => alive && setAddress(null));
     return () => {
@@ -80,7 +80,14 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
     );
   }
 
-  const constellation = scores ? Math.max(1, Math.round(scores.social / 10)) : undefined;
+  // Real on-chain people counts. Falls back to the social/10 approximation only when
+  // the counter is still 0 (pre-upgrade wallet that hasn't received a new vouch yet).
+  const vouchedBy = scores
+    ? scores.vouchedBy > 0
+      ? scores.vouchedBy
+      : Math.max(1, Math.round(scores.social / 10))
+    : undefined;
+  const backed = scores?.backed;
 
   return (
     <div className="container max-w-2xl py-14">
@@ -102,9 +109,9 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
         </div>
 
         <div className="grid grid-cols-3 divide-x divide-border/60 border-t border-border/60">
-          <Field label="SOCIAL_XP" value={scores?.social} accent="primary" />
+          <Field label="VOUCHED_BY" value={vouchedBy} accent="primary" />
+          <Field label="BACKED" value={backed} accent="tertiary" />
           <Field label="EARNED_XP" value={scores?.earned} accent="secondary" />
-          <Field label="STARS" value={constellation} accent="tertiary" />
         </div>
       </Frame>
 

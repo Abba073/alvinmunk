@@ -36,7 +36,7 @@ describe('first-run UI states', () => {
   });
 
   it('shows a friendly zero-state for the stat strip when no reputation exists yet', async () => {
-    getScoresMock.mockResolvedValue({ social: 0, earned: 0 });
+    getScoresMock.mockResolvedValue({ social: 0, earned: 0, vouchedBy: 0, backed: 0 });
 
     await act(async () => {
       root.render(<StatStrip address="GB123" />);

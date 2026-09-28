@@ -8,14 +8,16 @@ import { cn } from '@/lib/utils';
 
 /**
  * Dashboard stat strip — the at-a-glance reputation summary that anchors the app shell.
- * Reads both XP tracks for the signed-in address; Stars is the human-facing roll-up of
- * Social XP (one star per ~10). Refreshes on mount and on a slow interval so the numbers
- * catch up after a vouch / claim / quest without a full reload.
+ * Reads both XP tracks + the on-chain people counts for the signed-in address. The
+ * "Vouched by" tile is the headline number ("collect people, not points") and is sourced
+ * from the durable on-chain VouchedBy counter — not from social/10 or the ~12h event
+ * window. Refreshes on mount and on a slow interval so the numbers catch up after a
+ * vouch / claim / quest without a full reload.
  */
 const REFRESH_MS = 15_000;
 
 type Tile = {
-  key: 'stars' | 'social' | 'earned';
+  key: 'vouchedBy' | 'backed' | 'earned';
   label: string;
   hint: string;
   icon: typeof Sparkles;
@@ -23,13 +25,13 @@ type Tile = {
 };
 
 const TILES: Tile[] = [
-  { key: 'stars', label: 'Stars', hint: 'People in your sky', icon: Sparkles, tint: 'text-accent' },
-  { key: 'social', label: 'Social XP', hint: 'Clout · not cashable', icon: Users, tint: 'text-tertiary' },
+  { key: 'vouchedBy', label: 'Vouched by', hint: 'People in your sky', icon: Sparkles, tint: 'text-accent' },
+  { key: 'backed', label: 'Backed', hint: 'People you vouched', icon: Users, tint: 'text-tertiary' },
   { key: 'earned', label: 'Earned XP', hint: 'Verified · unlocks USDC', icon: ShieldCheck, tint: 'text-secondary' },
 ];
 
 export function StatStrip({ address }: { address: string }) {
-  const [scores, setScores] = useState<{ social: number; earned: number } | null>(null);
+  const [scores, setScores] = useState<{ social: number; earned: number; vouchedBy: number; backed: number } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -45,7 +47,7 @@ export function StatStrip({ address }: { address: string }) {
         })
         .catch(() => {
           if (alive) {
-            setScores({ social: 0, earned: 0 });
+            setScores({ social: 0, earned: 0, vouchedBy: 0, backed: 0 });
             setLoading(false);
           }
         });
@@ -58,10 +60,16 @@ export function StatStrip({ address }: { address: string }) {
     };
   }, [address]);
 
-  const stars = scores ? Math.max(0, Math.round(scores.social / 10)) : 0;
+  // Real on-chain people counts. Falls back to social/10 approximation only for
+  // pre-upgrade wallets where vouchedBy is still 0.
+  const vouchedBy = scores
+    ? scores.vouchedBy > 0
+      ? scores.vouchedBy
+      : Math.max(0, Math.round(scores.social / 10))
+    : 0;
   const value = (k: Tile['key']) =>
-    k === 'stars' ? stars : k === 'social' ? scores?.social ?? 0 : scores?.earned ?? 0;
-  const hasAnySignal = (scores?.social ?? 0) > 0 || (scores?.earned ?? 0) > 0;
+    k === 'vouchedBy' ? vouchedBy : k === 'backed' ? (scores?.backed ?? 0) : (scores?.earned ?? 0);
+  const hasAnySignal = vouchedBy > 0 || (scores?.backed ?? 0) > 0 || (scores?.earned ?? 0) > 0;
 
   return (
     <div className="space-y-3">

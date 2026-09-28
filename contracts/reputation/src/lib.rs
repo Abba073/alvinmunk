@@ -69,6 +69,8 @@ pub enum DataKey {
     Started(Address),          // got the starter Social XP (bool)
     Verified(Address),         // did ≥1 Earned action -> releases pending voucher bonuses (bool)
     Pending(Address),          // claimer -> Vec<PendingBonus> (2nd-order voucher bonuses owed)
+    VouchedBy(Address),        // u32 — distinct people who vouched FOR this address (first-pair only)
+    Backed(Address),           // u32 — distinct people this address has vouched (first-pair only)
 }
 
 /// Async half-card vouch. `from` mints it bound to `claim_hash = sha256(secret)`.
@@ -115,6 +117,11 @@ pub struct Profile {
     pub social: u64,
     pub earned: u64,
     pub verified: bool,
+    /// Distinct people who vouched FOR this address (first-pair claims only, starts at
+    /// the upgrade ledger — zero for pre-upgrade wallets until they receive a new vouch).
+    pub vouched_by: u32,
+    /// Distinct people this address has vouched / backed (first-pair claims only, same caveat).
+    pub backed: u32,
 }
 
 #[contract]
@@ -288,8 +295,11 @@ impl ReputationContract {
             } else {
                 Self::queue_bonus(&env, &claimer, &vouch.from, BONUS_VOUCHER);
             }
+            // On-chain people counters — increment only on a fresh first-pair claim so
+            // repeat vouches and re-claims never inflate the counts.
+            Self::inc_count(&env, &DataKey::VouchedBy(claimer.clone()));
+            Self::inc_count(&env, &DataKey::Backed(vouch.from.clone()));
         }
-
         env.events().publish(
             (symbol_short!("vouch"), symbol_short!("claimed")),
             (vouch_id, vouch.from, claimer),
@@ -374,14 +384,38 @@ impl ReputationContract {
             .unwrap_or(false)
     }
 
-    /// Aggregate profile view — social + earned + verified in ONE call. Purely
-    /// composes the existing getters; no new storage, no new write path. Cuts
-    /// get_profile-style callers from 2-3 round-trips down to 1.
+    /// On-chain people counts for `addr`.
+    ///   .0 = vouched_by  — distinct people who vouched FOR `addr` (first-pair claims only)
+    ///   .1 = backed      — distinct people `addr` has vouched / backed (first-pair claims only)
+    ///
+    /// Counters start at the upgrade ledger. Pre-upgrade wallets read 0 until they receive
+    /// or give a new first-pair vouch; the UI should fall back to the event-derived count
+    /// for those (see FRONTEND_CONTENT.md §82).
+    pub fn get_counts(env: Env, addr: Address) -> (u32, u32) {
+        let vouched_by: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VouchedBy(addr.clone()))
+            .unwrap_or(0);
+        let backed: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Backed(addr))
+            .unwrap_or(0);
+        (vouched_by, backed)
+    }
+
+    /// Aggregate profile view — social + earned + verified + people counts in ONE call.
+    /// Purely composes the existing getters + get_counts; no new storage, no new write
+    /// path. Cuts profile callers from multiple round-trips down to 1.
     pub fn get_profile(env: Env, addr: Address) -> Profile {
+        let (vouched_by, backed) = Self::get_counts(env.clone(), addr.clone());
         Profile {
             social: Self::get_score(env.clone(), addr.clone()),
             earned: Self::get_earned(env.clone(), addr.clone()),
             verified: Self::is_verified(env, addr),
+            vouched_by,
+            backed,
         }
     }
 
@@ -438,6 +472,16 @@ impl ReputationContract {
         env.storage()
             .persistent()
             .extend_ttl(&key, BUMP_THRESHOLD, BUMP_EXTEND);
+    }
+
+    /// Increment a u32 people-counter (VouchedBy or Backed) with saturation at u32::MAX.
+    fn inc_count(env: &Env, key: &DataKey) {
+        let cur: u32 = env.storage().persistent().get(key).unwrap_or(0);
+        let next = cur.saturating_add(1);
+        env.storage().persistent().set(key, &next);
+        env.storage()
+            .persistent()
+            .extend_ttl(key, BUMP_THRESHOLD, BUMP_EXTEND);
     }
 
     /// Social XP — vouches only. No attestation (vouches are noise, not the primitive).

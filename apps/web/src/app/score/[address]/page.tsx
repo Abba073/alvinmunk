@@ -47,12 +47,15 @@ export default async function ScorePage({ params }: ScorePageProps) {
 
   // Fetch reputation data (read-only, no wallet required)
   const [scores, attestations] = await Promise.all([
-    getScores(address).catch(() => ({ social: 0, earned: 0 })),
+    getScores(address).catch(() => ({ social: 0, earned: 0, vouchedBy: 0, backed: 0 })),
     getAttestation(address),
   ]);
 
-  const stars = Math.max(0, Math.round(scores.social / 10));
-  const hasActivity = scores.social > 0 || scores.earned > 0 || attestations > 0;
+  // Real on-chain count. Falls back to social/10 only for pre-upgrade wallets.
+  const vouchedBy = scores.vouchedBy > 0
+    ? scores.vouchedBy
+    : Math.max(0, Math.round(scores.social / 10));
+  const hasActivity = vouchedBy > 0 || scores.earned > 0 || attestations > 0;
 
   if (!hasActivity) {
     return (
@@ -81,7 +84,7 @@ export default async function ScorePage({ params }: ScorePageProps) {
 
       {/* Address display */}
       <div className="mt-6 flex items-center gap-4">
-        <Crest address={address} size={64} points={Math.min(9, 4 + (stars % 5))} />
+        <Crest address={address} size={64} points={Math.min(9, 4 + (vouchedBy % 5))} />
         <div>
           <p className="font-mono text-sm text-muted-foreground">{shortAddress(address)}</p>
           <p className="mt-1 text-xs text-muted-foreground/70">
@@ -93,26 +96,26 @@ export default async function ScorePage({ params }: ScorePageProps) {
       {/* Stats grid */}
       <Frame label="reputation // on_chain" index="live" className="mt-8">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          {/* Stars */}
+          {/* Vouched by */}
           <div className="relative border-border/50 p-6 sm:border-r">
             <div className="flex items-center gap-2">
               <Sparkles className="size-4 text-accent" />
-              <span className="text-sm font-medium text-muted-foreground">Stars</span>
+              <span className="text-sm font-medium text-muted-foreground">Vouched by</span>
             </div>
-            <p className="mt-2 font-display text-4xl font-semibold tabular-nums">{stars}</p>
+            <p className="mt-2 font-display text-4xl font-semibold tabular-nums">{vouchedBy}</p>
             <p className="mt-1 text-xs text-muted-foreground">People in your sky</p>
           </div>
 
-          {/* Social XP */}
+          {/* Backed */}
           <div className="relative border-border/50 p-6 sm:border-r">
             <div className="flex items-center gap-2">
               <Users className="size-4 text-tertiary" />
-              <span className="text-sm font-medium text-muted-foreground">Social XP</span>
+              <span className="text-sm font-medium text-muted-foreground">Backed</span>
             </div>
             <p className="mt-2 font-display text-4xl font-semibold tabular-nums text-tertiary">
-              {scores.social.toLocaleString()}
+              {scores.backed.toLocaleString()}
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">Clout · not cashable</p>
+            <p className="mt-1 text-xs text-muted-foreground">People you vouched</p>
           </div>
 
           {/* Earned XP */}
@@ -161,17 +164,13 @@ export default async function ScorePage({ params }: ScorePageProps) {
           <pre className="overflow-x-auto p-5 font-mono text-xs leading-relaxed text-foreground/80">
 {`import { getScores, getAttestation } from '@/lib/reputation';
 
-// Read Social and Earned XP for any address
-const { social, earned } = await getScores(address);
-// → { social: 42, earned: 30 }
+// Read Social, Earned XP + on-chain people counts for any address
+const { social, earned, vouchedBy, backed } = await getScores(address);
+// → { social: 42, earned: 30, vouchedBy: 5, backed: 3 }
 
 // Read completed quest attestations
 const attestations = await getAttestation(address);
-// → 5
-
-// Calculate stars (human-facing roll-up)
-const stars = Math.round(social / 10);
-// → 4`}
+// → 5`}
           </pre>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-2">

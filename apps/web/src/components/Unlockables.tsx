@@ -17,14 +17,14 @@ type Row = Gate & { unlocked: boolean };
  * (any app can `check` it). Hides itself when no gates are configured.
  */
 export function Unlockables({ address }: { address: string }) {
-  const [scores, setScores] = useState<{ social: number; earned: number } | null>(null);
+  const [scores, setScores] = useState<{ social: number; earned: number; vouchedBy: number; backed: number } | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [s, gates] = await Promise.all([
-      getScores(address).catch(() => ({ social: 0, earned: 0 })),
+      getScores(address).catch(() => ({ social: 0, earned: 0, vouchedBy: 0, backed: 0 })),
       getGates().catch(() => [] as Gate[]),
     ]);
     setScores(s);

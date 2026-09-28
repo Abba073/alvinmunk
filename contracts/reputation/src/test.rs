@@ -337,6 +337,93 @@ proptest! {
     }
 }
 
+// --- On-chain people counters (issue #273) ---
+
+#[test]
+fn get_counts_both_zero_for_fresh_address() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let (counts_vouched_by, counts_backed) = client.get_counts(&alice);
+    assert_eq!(counts_vouched_by, 0);
+    assert_eq!(counts_backed, 0);
+}
+
+#[test]
+fn counters_increment_on_first_pair_claim() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (s, h) = secret_and_hash(&env, 7);
+    let id = client.mint_vouch(&alice, &h, &String::from_str(&env, "hi"));
+    client.claim_vouch(&bob, &id, &s);
+
+    // bob was vouched BY alice -> bob.vouched_by = 1, bob.backed = 0
+    let (bob_vb, bob_ba) = client.get_counts(&bob);
+    assert_eq!(bob_vb, 1);
+    assert_eq!(bob_ba, 0);
+
+    // alice BACKED bob -> alice.backed = 1, alice.vouched_by = 0
+    let (alice_vb, alice_ba) = client.get_counts(&alice);
+    assert_eq!(alice_vb, 0);
+    assert_eq!(alice_ba, 1);
+}
+
+#[test]
+fn counters_not_incremented_on_repeated_pair() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // First vouch — fresh pair → counters increment.
+    let (s1, h1) = secret_and_hash(&env, 1);
+    let id1 = client.mint_vouch(&alice, &h1, &String::from_str(&env, "first"));
+    client.claim_vouch(&bob, &id1, &s1);
+
+    // Second vouch — same pair → counters must NOT change.
+    let (s2, h2) = secret_and_hash(&env, 2);
+    let id2 = client.mint_vouch(&alice, &h2, &String::from_str(&env, "again"));
+    client.claim_vouch(&bob, &id2, &s2);
+
+    let (bob_vb, _) = client.get_counts(&bob);
+    assert_eq!(bob_vb, 1, "repeated pair must not increment vouched_by");
+    let (_, alice_ba) = client.get_counts(&alice);
+    assert_eq!(alice_ba, 1, "repeated pair must not increment backed");
+}
+
+#[test]
+fn get_profile_includes_people_counts() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (s, h) = secret_and_hash(&env, 7);
+    let id = client.mint_vouch(&alice, &h, &String::from_str(&env, "hi"));
+    client.claim_vouch(&bob, &id, &s);
+
+    let p = client.get_profile(&bob);
+    assert_eq!(p.vouched_by, 1);
+    assert_eq!(p.backed, 0);
+
+    let p2 = client.get_profile(&alice);
+    assert_eq!(p2.vouched_by, 0);
+    assert_eq!(p2.backed, 1);
+}
+
+#[test]
+fn vouched_by_grows_with_multiple_unique_vouchers() {
+    let (env, client, _admin) = setup();
+    let carol = Address::generate(&env);
+
+    for fill in 0u8..3 {
+        let voucher = Address::generate(&env);
+        let (s, h) = secret_and_hash(&env, fill);
+        let id = client.mint_vouch(&voucher, &h, &String::from_str(&env, "hey"));
+        client.claim_vouch(&carol, &id, &s);
+    }
+
+    let (carol_vb, _) = client.get_counts(&carol);
+    assert_eq!(carol_vb, 3);
+}
+
 /// Release build of this contract, committed so the upgrade path can be tested without a
 /// wasm build step in CI. Refresh with `make upgrade-fixtures` after changing the contract.
 const REPUTATION_WASM: &[u8] = include_bytes!("../testdata/alvinmunk_reputation.wasm");
