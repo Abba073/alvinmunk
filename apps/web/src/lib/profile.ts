@@ -12,6 +12,8 @@ export interface Profile {
   genesisTx?: string;
   /** Chosen profile face. Absent → a deterministic default is derived from address. */
   avatar?: AvatarConfig;
+  /** Short bio, up to 80 chars. Plain text only. */
+  bio?: string;
 }
 
 const KEY = 'alvinmunk.profile';

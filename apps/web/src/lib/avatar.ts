@@ -132,3 +132,76 @@ export function resolveAvatarId(avatar: AvatarConfig | undefined, address: strin
   if (avatar?.kind === 'face' && isFaceId(avatar.id)) return avatar.id;
   return defaultAvatarId(address);
 }
+
+// ---------------------------------------------------------------------------
+// On-chain packing: AvatarConfig <-> u64
+//
+// Bit layout (64 bits):
+//   bit 63      : kind — 0 = face, 1 = kit
+//   face (kind=0):
+//     bits  2:0 : face index (0-based, maps to FACE_IDS[i])
+//   kit (kind=1):
+//     bits 21:19 : skin  (0-based, 3 bits → 0..5)
+//     bits 18:15 : hair  (0-based, 4 bits → 0..9)
+//     bits 14:11 : eyes  (0-based, 4 bits → 0..9)
+//     bits 10: 7 : mouth (0-based, 4 bits → 0..8)
+//     bits  6: 3 : acc   (0 = null, 1..13 stored directly, 4 bits)
+//     bits  2: 0 : bg    (0 = null, 1..5 stored directly, 3 bits)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pack an AvatarConfig into a u64 for on-chain storage.
+ * Returns a bigint so we can pass it to `args.u64()` in contracts.ts without loss.
+ */
+export function encodeAvatar(cfg: AvatarConfig): bigint {
+  if (cfg.kind === 'face') {
+    const idx = FACE_IDS.indexOf(cfg.id as FaceId);
+    if (idx < 0) throw new Error(`Unknown face id: ${cfg.id}`);
+    // kind=0, bits 2:0 = face index
+    return BigInt(idx);
+  }
+
+  // kind=1 (kit)
+  const skin = BigInt(cfg.skin - 1); // 0-based
+  const hair = BigInt(cfg.hair - 1);
+  const eyes = BigInt(cfg.eyes - 1);
+  const mouth = BigInt(cfg.mouth - 1);
+  const acc = cfg.acc === null ? 0n : BigInt(cfg.acc); // 0 = null
+  const bg = cfg.bg === null ? 0n : BigInt(cfg.bg);     // 0 = null
+
+  return (1n << 63n) | (skin << 19n) | (hair << 15n) | (eyes << 11n) | (mouth << 7n) | (acc << 3n) | bg;
+}
+
+/**
+ * Unpack a u64 (stored on-chain) back into an AvatarConfig.
+ * Returns undefined when the value is 0n and there is genuinely no stored avatar
+ * (0n is a valid face-00 encoding, so callers should gate on `hasMeta` not the value).
+ */
+export function decodeAvatar(packed: bigint): AvatarConfig {
+  const kind = (packed >> 63n) & 1n;
+
+  if (kind === 0n) {
+    // face
+    const idx = Number(packed & 0b111n);
+    const id = FACE_IDS[idx] ?? FACE_IDS[0];
+    return { kind: 'face', id };
+  }
+
+  // kit
+  const skin = Number((packed >> 19n) & 0b111n) + 1;
+  const hair = Number((packed >> 15n) & 0b1111n) + 1;
+  const eyes = Number((packed >> 11n) & 0b1111n) + 1;
+  const mouth = Number((packed >> 7n) & 0b1111n) + 1;
+  const accRaw = Number((packed >> 3n) & 0b1111n);
+  const bgRaw = Number(packed & 0b111n);
+
+  return {
+    kind: 'kit',
+    skin: Math.min(Math.max(skin, 1), KIT_COUNTS.skin),
+    hair: Math.min(Math.max(hair, 1), KIT_COUNTS.hair),
+    eyes: Math.min(Math.max(eyes, 1), KIT_COUNTS.eyes),
+    mouth: Math.min(Math.max(mouth, 1), KIT_COUNTS.mouth),
+    acc: accRaw === 0 ? null : Math.min(accRaw, KIT_COUNTS.acc),
+    bg: bgRaw === 0 ? null : Math.min(bgRaw, KIT_COUNTS.bg),
+  };
+}

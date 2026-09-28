@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    BytesN, Env, Symbol,
+    BytesN, Env, String, Symbol,
 };
 
 const BUMP_THRESHOLD: u32 = 17_280; // ~1 day (ledgers)
@@ -26,7 +26,10 @@ pub enum Error {
     AlreadyInitialized = 2,
     HandleTaken = 3,
     NoHandle = 4,
+    BioTooLong = 5,
 }
+
+const BIO_MAX_CHARS: u32 = 80;
 
 #[contracttype]
 #[derive(Clone)]
@@ -34,6 +37,16 @@ pub enum DataKey {
     Admin,
     Fwd(Symbol),  // handle -> Address
     Rev(Address), // Address -> handle (one handle per address)
+    Meta(Address), // Address -> (avatar: u64, bio: String)
+}
+
+/// On-chain profile metadata. `avatar` is a packed u64 (see `encodeAvatar` / `decodeAvatar`
+/// in the frontend lib/avatar.ts). `bio` is plain text, max 80 chars.
+#[contracttype]
+#[derive(Clone)]
+pub struct ProfileMeta {
+    pub avatar: u64,
+    pub bio: String,
 }
 
 #[contract]
@@ -131,6 +144,44 @@ impl RegistryContract {
             env.storage().persistent().remove(&DataKey::Rev(owner));
             env.storage().persistent().remove(&fkey);
         }
+    }
+
+    /// Store avatar + bio on-chain for `caller`. Requires `caller` to hold a handle
+    /// (so only claimed users can set meta). Bio is enforced to ≤ 80 chars.
+    /// The `avatar` field is a packed u64 — see `encodeAvatar` in lib/avatar.ts.
+    pub fn set_meta(env: Env, caller: Address, avatar: u64, bio: String) {
+        caller.require_auth();
+
+        // require the caller to hold a handle
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Rev(caller.clone()))
+        {
+            panic_with_error!(&env, Error::NoHandle);
+        }
+
+        if bio.len() > BIO_MAX_CHARS {
+            panic_with_error!(&env, Error::BioTooLong);
+        }
+
+        let mkey = DataKey::Meta(caller.clone());
+        env.storage()
+            .persistent()
+            .set(&mkey, &ProfileMeta { avatar, bio: bio.clone() });
+        Self::bump(&env, &mkey);
+
+        env.events().publish(
+            (symbol_short!("meta"), symbol_short!("set")),
+            (caller, avatar, bio),
+        );
+    }
+
+    /// Read `caller`'s on-chain profile meta. Returns `None` if not set.
+    pub fn get_meta(env: Env, addr: Address) -> Option<ProfileMeta> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Meta(addr))
     }
 
     // --- internal ---

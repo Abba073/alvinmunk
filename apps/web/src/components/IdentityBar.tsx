@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { toast } from 'sonner';
 import { Pencil, X } from 'lucide-react';
 import { useWallet } from '@/components/wallet/wallet-provider';
-import { claimHandle, isHandleAvailable } from '@/lib/registry';
+import { claimHandle, isHandleAvailable, setMeta } from '@/lib/registry';
 import { normalizeHandle } from '@/lib/profile';
 import { ShareRow } from '@/components/fx/share-row';
 import { Badge } from '@/components/ui/badge';
@@ -25,23 +25,57 @@ import { cn } from '@/lib/utils';
 export function IdentityBar() {
   const { profile, connect, setProfile } = useWallet();
   const [editing, setEditing] = useState(false);
+  const [editingBio, setEditingBio] = useState(false);
   const [value, setValue] = useState('');
+  const [bioValue, setBioValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
   const [tab, setTab] = useState<'faces' | 'remix'>('faces');
 
   if (!profile) return null;
 
-  function chooseFace(id: FaceId) {
+  async function chooseFace(id: FaceId) {
     if (!profile) return;
-    setProfile({ ...profile, avatar: { kind: 'face', id } });
+    const newAvatar = { kind: 'face' as const, id };
+    // optimistic local update first
+    setProfile({ ...profile, avatar: newAvatar });
     setPicking(false);
+    // write to chain (fire-and-forget with toast)
+    try {
+      const w = await connect();
+      await setMeta(w, newAvatar, profile.bio ?? '');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save avatar on-chain');
+    }
   }
 
-  function chooseKit(cfg: KitAvatar) {
+  async function chooseKit(cfg: KitAvatar) {
     if (!profile) return;
+    // optimistic local update first
     setProfile({ ...profile, avatar: cfg });
     setPicking(false);
+    // write to chain (fire-and-forget with toast)
+    try {
+      const w = await connect();
+      await setMeta(w, cfg, profile.bio ?? '');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save avatar on-chain');
+    }
+  }
+
+  async function saveBio() {
+    if (!profile) return;
+    const trimmed = bioValue.trim().slice(0, 80);
+    setProfile({ ...profile, bio: trimmed });
+    setEditingBio(false);
+    if (!profile.avatar) return; // no avatar to pair with
+    try {
+      const w = await connect();
+      await setMeta(w, profile.avatar, trimmed);
+      toast.success('Bio saved on-chain.');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save bio on-chain');
+    }
   }
 
   async function save() {
@@ -141,6 +175,60 @@ export function IdentityBar() {
         />
       </div>
     </div>
+
+    {/* Bio row */}
+    <div className="mt-1.5 flex items-center gap-2 pl-[52px]">
+      {editingBio ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void saveBio();
+          }}
+          className="flex w-full items-center gap-2"
+        >
+          <Input
+            autoFocus
+            value={bioValue}
+            onChange={(e) => setBioValue(e.target.value.slice(0, 80))}
+            placeholder="Short bio (max 80 chars)"
+            className="h-8 flex-1 text-xs"
+            aria-label="Bio"
+            maxLength={80}
+          />
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            {bioValue.length}/80
+          </span>
+          <Button size="sm" variant="flow" type="submit">save</Button>
+          <button
+            type="button"
+            onClick={() => setEditingBio(false)}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Cancel bio edit"
+          >
+            <X className="size-3.5" />
+          </button>
+        </form>
+      ) : (
+        <>
+          {profile.bio ? (
+            <p className="truncate font-mono text-xs text-muted-foreground">{profile.bio}</p>
+          ) : (
+            <span className="font-mono text-[10px] text-muted-foreground/50">add a bio…</span>
+          )}
+          <button
+            onClick={() => {
+              setBioValue(profile.bio ?? '');
+              setEditingBio(true);
+            }}
+            className="shrink-0 text-muted-foreground transition-colors hover:text-primary"
+            aria-label="Edit bio"
+          >
+            <Pencil className="size-3" />
+          </button>
+        </>
+      )}
+    </div>
+
       {picking && (
         <div className="mt-3 rounded-xl border border-border/60 bg-surface/40 p-3">
           <div className="mb-3 flex justify-center gap-1">
@@ -160,14 +248,14 @@ export function IdentityBar() {
           {tab === 'faces' ? (
             <AvatarPicker
               value={profile.avatar?.kind === 'face' ? profile.avatar.id : undefined}
-              onChange={chooseFace}
+              onChange={(id) => { void chooseFace(id); }}
               size={44}
             />
           ) : (
             <AvatarRemix
               seed={profile.address}
               initial={profile.avatar?.kind === 'kit' ? profile.avatar : undefined}
-              onSave={chooseKit}
+              onSave={(cfg) => { void chooseKit(cfg); }}
               onCancel={() => setPicking(false)}
             />
           )}

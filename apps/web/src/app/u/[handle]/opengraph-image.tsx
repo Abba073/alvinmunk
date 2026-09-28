@@ -1,6 +1,5 @@
 import { ImageResponse } from 'next/og';
 import { ogResolve, ogCard } from '@/lib/og-card';
-import { defaultAvatarId } from '@/lib/avatar';
 
 // The artifact every shared /u/<handle> link unfurls into — resolves the handle
 // on-chain and renders the real constellation + scores (shared builder in lib/og-card).
@@ -11,7 +10,6 @@ export const alt = 'alvinmunk';
 
 export default async function Image({ params }: { params: { handle: string } }) {
   const handle = params.handle.toLowerCase();
-  const { address, scores } = await ogResolve(handle);
-  const avatarId = address ? defaultAvatarId(address) : undefined;
+  const { address, scores, avatarId } = await ogResolve(handle);
   return new ImageResponse(ogCard({ handle, address, scores, avatarId }), { ...size });
 }

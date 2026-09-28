@@ -131,3 +131,114 @@ fn non_admin_upgrade_reverts() {
     let hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
     client.upgrade(&hash);
 }
+
+// ---------- set_meta / get_meta tests ----------
+
+#[test]
+fn set_and_get_meta_round_trip() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+
+    // Pack a simple face avatar (kind=0, face index 2)
+    let avatar: u64 = 2; // bit63=0 (face), bits 2:0 = 2
+    let bio = soroban_sdk::String::from_str(&env, "Builder on Stellar");
+    client.set_meta(&alice, &avatar, &bio);
+
+    let meta = client.get_meta(&alice).expect("meta should be present");
+    assert_eq!(meta.avatar, avatar);
+    assert_eq!(meta.bio, bio);
+}
+
+#[test]
+fn set_meta_overwrites_previous() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+
+    let bio1 = soroban_sdk::String::from_str(&env, "first bio");
+    let bio2 = soroban_sdk::String::from_str(&env, "updated bio");
+    client.set_meta(&alice, &1u64, &bio1);
+    client.set_meta(&alice, &2u64, &bio2);
+
+    let meta = client.get_meta(&alice).expect("meta should be present");
+    assert_eq!(meta.avatar, 2u64);
+    assert_eq!(meta.bio, bio2);
+}
+
+#[test]
+#[should_panic]
+fn set_meta_without_handle_reverts() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    // alice has no handle yet
+    let bio = soroban_sdk::String::from_str(&env, "no handle");
+    client.set_meta(&alice, &0u64, &bio);
+}
+
+#[test]
+#[should_panic]
+fn set_meta_bio_over_80_chars_reverts() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+
+    // 81-character bio
+    let long = "a".repeat(81);
+    let bio = soroban_sdk::String::from_str(&env, &long);
+    client.set_meta(&alice, &0u64, &bio);
+}
+
+#[test]
+fn set_meta_bio_exactly_80_chars_is_accepted() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+
+    let exactly_80 = "a".repeat(80);
+    let bio = soroban_sdk::String::from_str(&env, &exactly_80);
+    client.set_meta(&alice, &0u64, &bio); // should not panic
+    let meta = client.get_meta(&alice).expect("meta present");
+    assert_eq!(meta.bio.len(), 80);
+}
+
+#[test]
+fn get_meta_returns_none_when_unset() {
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+    assert!(client.get_meta(&alice).is_none());
+}
+
+#[test]
+fn kit_avatar_round_trip_via_u64() {
+    // Encode a kit avatar using the same bit-packing as lib/avatar.ts encodeAvatar:
+    // bit63=1 (kit), bits[2:0]=bg, [6:3]=acc, [10:7]=mouth, [14:11]=eyes, [18:15]=hair, [21:19]=skin
+    let (env, client, _admin) = setup();
+    let alice = Address::generate(&env);
+    client.claim(&alice, &symbol_short!("alice"));
+
+    // skin=3 hair=7 eyes=5 mouth=4 acc=9 bg=2 → pack it
+    let skin: u64 = 3 - 1; // 0-indexed
+    let hair: u64 = 7 - 1;
+    let eyes: u64 = 5 - 1;
+    let mouth: u64 = 4 - 1;
+    let acc: u64 = 9; // 0 = null, 1..=13 = acc index
+    let bg: u64 = 2;  // 0 = null, 1..=5 = bg index
+    let packed: u64 = (1u64 << 63) | (skin << 19) | (hair << 15) | (eyes << 11) | (mouth << 7) | (acc << 3) | bg;
+
+    let bio = soroban_sdk::String::from_str(&env, "kit test");
+    client.set_meta(&alice, &packed, &bio);
+
+    let meta = client.get_meta(&alice).expect("meta present");
+    assert_eq!(meta.avatar, packed);
+    // decode and verify fields
+    let v = meta.avatar;
+    assert_eq!((v >> 63) & 1, 1); // kind = kit
+    assert_eq!(((v >> 19) & 0b111) + 1, 3); // skin
+    assert_eq!(((v >> 15) & 0b1111) + 1, 7); // hair
+    assert_eq!(((v >> 11) & 0b1111) + 1, 5); // eyes
+    assert_eq!(((v >> 7) & 0b1111) + 1, 4);  // mouth
+    assert_eq!((v >> 3) & 0b1111, 9);         // acc
+    assert_eq!(v & 0b111, 2);                 // bg
+}

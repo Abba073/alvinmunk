@@ -1,8 +1,8 @@
 import { stampArt, shortAddr } from '@alvinmunk/shared';
-import { resolveHandle } from './registry';
+import { resolveHandle, getMeta } from './registry';
 import { getScores } from './reputation';
 import { loadPngDataUri } from './og-assets';
-import { faceFile, type FaceId } from './avatar';
+import { faceFile, defaultAvatarId, isFaceId, type FaceId } from './avatar';
 
 // Shared profile-card renderer for the OG image routes (/u and /v). Resolves the handle
 // on-chain and returns Satori-compatible JSX. Literal colors (Satori has no CSS vars).
@@ -19,16 +19,30 @@ const MUTED = '#8b86a8';
 export async function ogResolve(handle: string): Promise<{
   address: string | null;
   scores: { social: number; earned: number };
+  avatarId: FaceId | undefined;
 }> {
   let address: string | null = null;
   let scores = { social: 0, earned: 0 };
+  let avatarId: FaceId | undefined;
   try {
     address = await resolveHandle(handle);
-    if (address) scores = await getScores(address);
+    if (address) {
+      const [s, meta] = await Promise.all([
+        getScores(address),
+        getMeta(address).catch(() => null),
+      ]);
+      scores = s;
+      if (meta?.avatar?.kind === 'face' && isFaceId(meta.avatar.id)) {
+        avatarId = meta.avatar.id;
+      } else {
+        // Kit avatar or no stored meta → use deterministic default face for the OG card
+        avatarId = defaultAvatarId(address);
+      }
+    }
   } catch {
     /* unclaimed / rpc miss → render a neutral card */
   }
-  return { address, scores };
+  return { address, scores, avatarId };
 }
 
 export function ogCard(opts: {

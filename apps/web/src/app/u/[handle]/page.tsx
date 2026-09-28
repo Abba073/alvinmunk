@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useWallet } from '@/components/wallet/wallet-provider';
 import { getScores } from '@/lib/reputation';
-import { resolveHandle } from '@/lib/registry';
+import { resolveHandle, getMeta } from '@/lib/registry';
 import { Crest } from '@/components/brand/crest';
 import { Avatar } from '@/components/Avatar';
 import { Frame } from '@/components/fx/frame';
@@ -13,6 +13,7 @@ import { ShareRow } from '@/components/fx/share-row';
 import { Skeleton } from '@/components/ui/skeleton';
 import { buttonVariants } from '@/components/ui/button';
 import { cn, shortAddress } from '@/lib/utils';
+import type { AvatarConfig } from '@/lib/avatar';
 
 /**
  * Public profile. The handle is resolved ON-CHAIN via the registry, so ANY claimed
@@ -24,16 +25,31 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
   const { profile } = useWallet();
   const [address, setAddress] = useState<string | null | undefined>(undefined); // undefined = loading
   const [scores, setScores] = useState<{ social: number; earned: number } | null>(null);
+  const [onChainAvatar, setOnChainAvatar] = useState<AvatarConfig | undefined>(undefined);
+  const [onChainBio, setOnChainBio] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let alive = true;
     setAddress(undefined);
     setScores(null);
+    setOnChainAvatar(undefined);
+    setOnChainBio(undefined);
     resolveHandle(handle)
       .then(async (addr) => {
         if (!alive) return;
         setAddress(addr);
-        if (addr) setScores(await getScores(addr).catch(() => ({ social: 0, earned: 0 })));
+        if (addr) {
+          const [s, meta] = await Promise.all([
+            getScores(addr).catch(() => ({ social: 0, earned: 0 })),
+            getMeta(addr).catch(() => null),
+          ]);
+          if (!alive) return;
+          setScores(s);
+          if (meta) {
+            setOnChainAvatar(meta.avatar);
+            setOnChainBio(meta.bio);
+          }
+        }
       })
       .catch(() => alive && setAddress(null));
     return () => {
@@ -42,6 +58,9 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
   }, [handle]);
 
   const isMe = !!address && profile?.address === address;
+  // Own profile: merge optimistic local state over on-chain (local wins for instant feedback)
+  const displayAvatar = isMe ? (profile?.avatar ?? onChainAvatar) : onChainAvatar;
+  const displayBio = isMe ? (profile?.bio ?? onChainBio) : onChainBio;
 
   if (address === undefined) {
     return (
@@ -88,13 +107,16 @@ export default function ProfilePage({ params }: { params: { handle: string } }) 
         <div className="grid gap-6 p-7 sm:grid-cols-[auto_1fr] sm:items-center sm:p-8">
           <Avatar
             address={address}
-            avatar={isMe ? profile?.avatar : undefined}
+            avatar={displayAvatar}
             handle={handle}
             size={140}
           />
           <div>
             <h1 className="font-display text-3xl font-semibold">@{handle}</h1>
             <p className="mt-1 font-mono text-xs text-muted-foreground">{shortAddress(address)}</p>
+            {displayBio && (
+              <p className="mt-2 text-sm text-foreground/80">{displayBio}</p>
+            )}
             <div className="mt-3">
               <Stamp accent="secondary">✦ LIT ON STELLAR</Stamp>
             </div>
