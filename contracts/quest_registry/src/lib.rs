@@ -57,7 +57,8 @@ pub struct QuestConfig {
 
 /// Weekly retention streak (Green belt). `weeks` = current consecutive-week run;
 /// `last_week` = the epoch (timestamp / WEEK_SECS) of the most recent completion;
-/// `best` = the all-time high (a rank input that survives a miss).
+/// `best` = the all-time high (a rank input that survives a miss). Storage keeps `weeks`
+/// until the next award; `get_streak` reports a lapsed run as 0.
 #[contracttype]
 #[derive(Clone)]
 pub struct Streak {
@@ -228,16 +229,24 @@ impl QuestRegistryContract {
         Self::current_week(&env)
     }
 
-    /// A player's weekly streak (consecutive weeks with ≥1 completed quest).
+    /// A player's weekly streak (consecutive weeks with ≥1 completed quest), as of now.
+    /// The stored run only changes on the next award, so a run whose last completion is
+    /// older than last week reads as `weeks = 0` here — it can no longer be extended.
+    /// `last_week` and `best` are returned as stored. Read-only: storage is not rewritten.
     pub fn get_streak(env: Env, player: Address) -> Streak {
-        env.storage()
+        let mut s: Streak = env
+            .storage()
             .persistent()
             .get(&DataKey::Streak(player))
             .unwrap_or(Streak {
                 weeks: 0,
                 last_week: 0,
                 best: 0,
-            })
+            });
+        if s.weeks > 0 && s.last_week.saturating_add(1) < Self::current_week(&env) {
+            s.weeks = 0;
+        }
+        s
     }
 
     // --- internal ---
