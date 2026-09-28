@@ -9,6 +9,7 @@ import { asset, BRAND } from '@/lib/assets';
 import { FirstStarNudge } from '@/components/FirstStarNudge';
 import { InviteNudge } from '@/components/InviteNudge';
 import { PendingHalfCards } from '@/components/PendingHalfCards';
+import { OwedBonuses } from '@/components/OwedBonuses';
 import { ActivityFeed } from '@/components/ActivityFeed';
 import { useTranslations } from '@/lib/i18n';
 
@@ -74,6 +75,9 @@ export default function AppHome() {
 
       {/* Time-sensitive: unclaimed half-cards you minted (stake at risk) — self-hides when empty */}
       <PendingHalfCards />
+
+      {/* Owed bonuses: pending Social XP from vouched people who haven't verified yet — self-hides when nothing owed */}
+      <OwedBonuses />
 
       {/* Quick actions — the three focused routes, one job each */}
       <section>

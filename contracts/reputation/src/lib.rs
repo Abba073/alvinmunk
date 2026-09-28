@@ -370,6 +370,16 @@ impl ReputationContract {
             .get(&DataKey::Attestation(addr, schema_id))
     }
 
+    /// Pending 2nd-order bonuses owed to vouchers for this `claimer`.
+    /// Returns the full Vec — empty when there are none (claimer already verified,
+    /// or never claimed anything). Safe to call for any address.
+    pub fn get_pending(env: Env, claimer: Address) -> Vec<PendingBonus> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Pending(claimer))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     /// A half-card by id — for the claim preview and the expiry keeper.
     pub fn get_vouch(env: Env, vouch_id: u64) -> Option<Vouch> {
         env.storage().persistent().get(&DataKey::Vouch(vouch_id))

@@ -190,3 +190,76 @@ export async function getAttestation(addr: string): Promise<number> {
     return 0;
   }
 }
+
+// ── Owed bonuses (issue #275) ─────────────────────────────────────────────────
+
+/** One pending bonus entry owed to `me` for a specific claimer. */
+export interface OwedBonus {
+  /** Address of the claimer whose verification will release this bonus. */
+  claimer: string;
+  /** Note on the original vouch (for display). */
+  note: string;
+  /** Total Social XP owed to `me` from this claimer (sum of all pending entries for me). */
+  amount: number;
+}
+
+/**
+ * `getOwedBonuses(me)` — scan the locally-stored vouches minted by `me`, find the
+ * ones that have been claimed but whose claimer hasn't verified yet, and return the
+ * pending Social XP owed per claimer.
+ *
+ * Algorithm:
+ * 1. Load `me`'s minted vouches from localStorage (`getMyVouches`).
+ * 2. For each, fetch `get_vouch(id)` to find the claimer (skip unclaimed / slashed).
+ * 3. Call `get_pending(claimer)` on-chain; keep entries where `voucher == me`.
+ * 4. Sum per claimer and return, sorted by amount descending.
+ *
+ * Skips claimers that are already verified (their Pending was flushed on first
+ * Earned action, so `get_pending` returns [] for them).
+ */
+export async function getOwedBonuses(me: string): Promise<OwedBonus[]> {
+  const { getMyVouches } = await import('./myvouches');
+  const mine = getMyVouches();
+  if (mine.length === 0) return [];
+
+  // Fetch chain state for all stored vouches in parallel.
+  const settled = await Promise.all(
+    mine.map(async (mv) => {
+      const v = await getVouch(mv.id).catch(() => null);
+      // Only care about claimed vouches — unclaimed means the bonus hasn't been queued.
+      if (!v || !v.claimed || !v.claimer) return null;
+      return { claimer: v.claimer, note: mv.note };
+    }),
+  );
+
+  // Deduplicate claimers (same person may have claimed multiple vouches from me).
+  const claimerMap = new Map<string, string>(); // claimer -> note (first vouch note wins)
+  for (const s of settled) {
+    if (!s) continue;
+    if (!claimerMap.has(s.claimer)) claimerMap.set(s.claimer, s.note);
+  }
+  if (claimerMap.size === 0) return [];
+
+  // For each unique claimer, read their pending bonus list on-chain.
+  const results: OwedBonus[] = [];
+  await Promise.all(
+    Array.from(claimerMap.entries()).map(async ([claimer, note]) => {
+      try {
+        const pending = await readPublic<Array<{ voucher: string; amount: bigint }>>(
+          repId(),
+          'get_pending',
+          [args.addr(claimer)],
+        );
+        if (!pending || pending.length === 0) return; // already verified — nothing owed
+        const total = pending
+          .filter((p) => p.voucher === me)
+          .reduce((sum, p) => sum + Number(p.amount), 0);
+        if (total > 0) results.push({ claimer, note, amount: total });
+      } catch {
+        // RPC miss — skip this claimer silently
+      }
+    }),
+  );
+
+  return results.sort((a, b) => b.amount - a.amount);
+}
